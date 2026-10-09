@@ -40,7 +40,7 @@ class FpScanTest {
     @Test void dedupeAcrossDupeipOwners(){H h=new H();h.start("6ubaa","6uba");h.dupe("6ubaa","§66ubaa, §eOnline");h.hist("6ubaa","забанен","FP","Истек");h.hist("Online","забанен","fp","Активный");
         h.dupe("6uba","§66ubaa, §eOnline, §66uba");h.hist("6uba","забанен","FP","Истек");h.drain();assertEquals(3,h.sent.stream().filter(s->s.startsWith("hist ")).count());assertEquals(3,h.result.names().size());}
     @Test void wrongOwnerHeaderAndPlayerChatIgnored(){H h=new H();h.start("6ubaa");h.feed("Сканирование Other.");h.s.accept(FpProtocol.Line.plain("§66ubaa"));h.tick(1000);assertEquals(1,h.sent.size());assertNull(h.result);h.s.stop("stop");}
-    @Test void retryAndStopSavePartialWithoutSendingAfterward(){H h=new H();h.start("6ubaa");h.tick(6100);assertEquals(1,h.sent.size());h.tick(500);assertEquals(2,h.sent.size());h.s.stop("stop");h.tick(100000);assertEquals(2,h.sent.size());assertFalse(h.result.complete());assertFalse(h.result.unresolved().isEmpty());}
+    @Test void timeoutNeverDuplicatesRequestAndPreservesUnresolved(){H h=new H();h.start("6ubaa");h.tick(6100);assertEquals(1,h.sent.size());h.tick(100000);assertEquals(1,h.sent.size());assertFalse(h.result.complete());assertFalse(h.result.unresolved().isEmpty());}
     @Test void unavailablePlayerSkipped(){H h=new H();h.start("6ubaa");h.feed("Игрок 6ubaa не найден.");h.drain();assertTrue(h.result.complete());assertTrue(h.result.names().isEmpty());}
     @Test void trueNewlinesAndTimestampsWithSuffixAnnotations(){H h=new H();h.start("6ubaa");h.dupe("6ubaa","[18:54:48] §66ubaa,\n§eOnline [C] [H]");h.hist("6ubaa","забанен","fp","Истек");h.hist("Online","забанен","funpay","Истек");h.drain();assertEquals(2,h.result.names().size());}
     @Test void reasonWrappingBetweenPackets(){H h=new H();h.start("6ubaa");h.dupe("6ubaa","§66ubaa");h.feed("История 6ubaa (Лимит: 1):\n6ubaa был забанен куратором Mod\nПо причине: Покупка на");h.feed("Funpay [Истек]");h.drain();assertEquals(List.of("6ubaa"),h.result.names());}
@@ -80,10 +80,10 @@ class FpScanTest {
         h.feed("Funpay [Истек]");h.tick(4);assertEquals(2,h.sent.size());h.tick(1);
         assertEquals("dupeip Online",h.sent.getLast());assertEquals(List.of("6ubaa"),h.s.matches());
     }
-    @Test void missingHistoryRowsAreNotReportedCompleteAfterSilence(){
+    @Test void advertisedLimitDoesNotStallAndLaterRowsStillBelongToOwner(){
         H h=new H();h.start("6ubaa","Online");h.feed("Сканирование 6ubaa.\n§66ubaa");h.tick(5);
         h.feed("История 6ubaa (Лимит: 2):\n6ubaa был забанен куратором Mod\nПо причине: Читы [Истек]");
-        h.tick(1200);assertEquals(2,h.sent.size());assertNull(h.result);
+        h.tick(5);assertEquals(3,h.sent.size());assertEquals("dupeip Online",h.sent.getLast());assertNull(h.result);
         h.feed("-- [2026-10-08 15:29] --\n6ubaa был забанен куратором Mod\nПо причине: FP_RW [Активный]\nОкончание в 11 дней.");
         h.tick(5);assertEquals("dupeip Online",h.sent.getLast());assertEquals(List.of("6ubaa"),h.s.matches());
     }
@@ -107,11 +107,11 @@ class FpScanTest {
         h.feed("Other was unbanned by ReallyWorld.");h.tick(100);assertNull(h.result);
         h.feed("Funpay [Истек]");h.tick(5);assertEquals(List.of("6ubaa"),h.result.names());
     }
-    @Test void truncatedHistoryRetriesInsteadOfSilentlyFinishing(){
+    @Test void mismatchedLimitCompletesWithoutRepeatingHistory(){
         H h=new H();h.start("6ubaa");h.feed("Сканирование 6ubaa.\n§66ubaa");h.tick(5);
         h.feed("История 6ubaa (Лимит: 2):\n6ubaa был забанен куратором Mod\nПо причине: Читы [Истек]");
-        h.tick(6000);assertEquals(2,h.sent.size());h.tick(500);assertEquals("hist 6ubaa ban 100",h.sent.getLast());
-        assertEquals(3,h.sent.size());assertNull(h.result);assertTrue(h.logs.stream().anyMatch(s->s.startsWith("INCOMPLETE")));
+        h.tick(5);assertEquals(2,h.sent.size());h.tick(100);assertTrue(h.result.complete());
+        assertEquals(2,h.sent.size());assertTrue(h.logs.stream().noneMatch(s->s.startsWith("INCOMPLETE")));
     }
     @Test void actualEmptyHundredLimitHeaderUsesOnlyNormalFiveMillisecondGap(){
         H h=new H();h.start("6ubaa","Online");h.feed("Сканирование 6ubaa.\n§66ubaa");h.tick(5);
@@ -181,10 +181,10 @@ class FpScanTest {
         h.feed("История CooL_EVGEXA (Лимит: 7):");
         for(int record=0;record<7;record++){
             h.feed(" -- [2026-06-30 04:57] --");h.feed("CooL_EVGEXA был забанен куратором Regalia ");
-            h.tick(10);assertEquals(2,h.sent.size());
+            h.tick(10);assertEquals(record==0?2:3,h.sent.size());
             h.feed("По причине: '"+(record==6?"FP_RW":"Уклон от проверки")+"' [Истек]");
             if(record==0||record==2){h.feed("");h.feed(" CooL_EVGEXA was unbanned by ReallyWorld.");}
-            if(record<6){h.tick(10);assertEquals(2,h.sent.size());}
+            if(record<6){h.tick(10);assertEquals(3,h.sent.size());}
         }
         h.tick(5);assertEquals("dupeip Online",h.sent.getLast());assertEquals(List.of("CooL_EVGEXA"),h.s.matches());
     }

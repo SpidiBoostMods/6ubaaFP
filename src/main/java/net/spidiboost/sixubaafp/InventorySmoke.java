@@ -18,14 +18,18 @@ final class InventorySmoke {
     static Preview verify(){
         var dispatcher=new com.mojang.brigadier.CommandDispatcher<net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource>();
         FpClient.INSTANCE.registerCommands(dispatcher);
-        for(String root:List.of("6ubaa","6ubaafp"))for(String sub:List.of("inv","invsee"))for(String mode:List.of("","none ","full ")){
+        for(String root:List.of("6ubaafp"))for(String sub:List.of("inv","invsee"))for(String mode:List.of("","none ","full ")){
             String command=root+" "+sub+" "+mode+"minecraft:compass, Алмазный меч";
             var parsed=dispatcher.parse(command,null);require(parsed.getExceptions().isEmpty()&&!parsed.getReader().canRead(),"native command parse "+command);
             require(parsed.getContext().getNodes().stream().anyMatch(n->n.getNode().getName().equals("предметы")),"greedy items argument");
             if(!mode.isEmpty())require(parsed.getContext().getNodes().stream().anyMatch(n->n.getNode().getName().equals(mode.strip())),"mode is literal not item name");
         }
-        for(String root:List.of("6ubaa","6ubaafp"))for(String sub:List.of("start","full","stop","status","open"))
+        require(dispatcher.getRoot().getChild("6ubaa")==null,"removed alias is absent");
+        for(String root:List.of("6ubaafp"))for(String sub:List.of("start","full","stop","status","open","update"))
             require(dispatcher.getRoot().getChild(root).getChild(sub)!=null,"legacy command preserved");
+        for(String setting:List.of("on","off"))require(!dispatcher.parse("6ubaafp update "+setting,null).getReader().canRead(),"update setting parse");
+        var ordinary=Text.literal("Чужой чат 🗝").withColor(0x123456).asOrderedText();require(FpTheme.animate(ordinary)==ordinary,"foreign text unchanged");
+        require(FpTheme.message("Юникод 🗝").getString().equals("[6ubaaFP]  Юникод 🗝"),"gradient Unicode unchanged");
         require(net.fabricmc.loader.api.FabricLoader.getInstance().getObjectShare().get("spidiboost:update-save-sixubaafp") instanceof Runnable,"updater preservation hook");
         long[] fpTime={0};var fpRequests=new ArrayList<String>();var fpResults=new ArrayList<FpScan.Result>();
         var fp=new FpScan(new FpScan.Port(){
@@ -72,6 +76,13 @@ final class InventorySmoke {
         private final GenericContainerScreen container;int frames;
         Preview(GenericContainerScreen container){super(Text.literal("Inventory smoke preview"));this.container=container;}
         @Override protected void init(){container.init(client,width,height);}
-        @Override public void render(DrawContext context,int mouseX,int mouseY,float delta){container.render(context,mouseX,mouseY,delta);frames++;}
+        @Override public void render(DrawContext context,int mouseX,int mouseY,float delta){
+            container.render(context,mouseX,mouseY,delta);
+            FpHud.draw(context,new FpHud.View("ИНВЕНТАРИ","InvRetry","Ждём сервер · повтор 3",7,24,3,1,12,true));
+            int y=Math.max(100,height-48);
+            for(var line:client.textRenderer.wrapLines(FpTheme.message("Предмет найден · NativeA"),width-24)){context.drawTextWithShadow(client.textRenderer,line,12,y,0xffffff);y+=11;}
+            for(var line:client.textRenderer.wrapLines(FpTheme.error("GitHub временно недоступен · игра продолжается"),width-24)){context.drawTextWithShadow(client.textRenderer,line,12,y,0xffffff);y+=11;}
+            frames++;
+        }
     }
 }

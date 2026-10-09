@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"fp_probe","version":"1","name":"Isolated FP QA","environment":"*","entrypoints":{"main":["net.spidiboost.sixubaafp.NativeFixture"],"client":["net.spidiboost.sixubaafp.NativeProbe"]},"depends":{"sixubaafp":"*"}}

@@ -11,6 +11,8 @@ public final class FpScan {
         Collection<String> online();
         void log(String message);
         void finish(Result result);
+        default String currentName(){return "";}
+        default void clearChat(){}
     }
     public record Result(List<String> names,List<String> unresolved,boolean complete,String reason,int players,int histories) {}
     private enum Phase { IDLE, DUPE, HIST }
@@ -23,6 +25,10 @@ public final class FpScan {
     private static final Pattern REASON=Pattern.compile("^(?:по причине|причина|reason)\\s*:\\s*(.*)",FLAGS);
     private static final Pattern BODY=Pattern.compile("^[A-Za-z0-9_]{1,16}(?:\\s*\\[[CH]])*(?:\\s*,\\s*[A-Za-z0-9_]{1,16}(?:\\s*\\[[CH]])*)*\\s*,?\\s*$",FLAGS);
     private final Port port; private final LongSupplier clock; private final Thread thread=Thread.currentThread();
+    private FpRunLedger ledger;private final boolean sharedLedger;
+    private final Set<String> redNames=new HashSet<>();
+    private final Map<String,LinkedHashMap<String,String>> twins=new HashMap<>();
+    private final List<FpRunLedger.Account> group=new ArrayList<>();
     private Phase phase=Phase.IDLE; private String target,reason=""; private boolean header,body,dupeComplete,recordComplete,historyStarted,banEntry,reasonSeen,reasonOpen;
     private int attempts,historyCount,recordCount,expected,dupeCount;
     private long sentAt,lastRelevant,nextSendAt,lastSent=-1000000;
@@ -40,13 +46,28 @@ public final class FpScan {
         LateHistory(String nick){this.nick=nick;}
     }
     private boolean onlyLocal=true;
-    public FpScan(Port port,LongSupplier clock) {this.port=port;this.clock=clock;}
+    public FpScan(Port port,LongSupplier clock) {this(port,clock,null);}
+    public FpScan(Port port,LongSupplier clock,FpRunLedger ledger) {this.port=port;this.clock=clock;this.ledger=ledger;this.sharedLedger=ledger!=null;}
     private void own() {if(Thread.currentThread()!=thread) throw new IllegalStateException("off client thread");}
     public boolean active() {return phase!=Phase.IDLE;}
-    public List<String> matches() {return List.copyOf(matches.values());}
+    public boolean exhausted(){return !active()&&target==null&&players.isEmpty()&&histories.isEmpty();}
+    private boolean self(String nick){return nick!=null&&nick.equalsIgnoreCase(port.currentName());}
+    public List<String> matches() {
+        Map<String,String> online=redNames.isEmpty()?Map.of():local();List<String> result=new ArrayList<>();
+        for(var entry:matches.entrySet()){
+            if(self(entry.getValue()))continue;
+            var associated=twins.getOrDefault(entry.getKey(),new LinkedHashMap<>());
+            List<String> present=associated.keySet().stream().filter(online::containsKey).map(online::get).toList();
+            result.add(entry.getValue()+(redNames.contains(entry.getKey())&&!present.isEmpty()?" (На сервере: "+String.join(", ",present)+")":""));
+        }
+        return List.copyOf(result);
+    }
     public String status() {return "dupeip: "+dupeCount+"; hist: "+historyCount+"; найдено: "+matches.size()+"; осталось TAB: "+players.size()+"; запрос: "+(target==null?"—":target);}
+    public record Progress(int processed,int total,int found,String target,String phase){}
+    public Progress progress(){return new Progress(dupeCount,dupeCount+players.size()+(phase==Phase.DUPE&&target!=null?1:0),matches.size(),target==null?"":target,phase==Phase.HIST?"Проверяем историю бана":"Связанные аккаунты");}
     public void start(Collection<String> names,boolean onlyLocal) {
         own(); if(active()) throw new IllegalStateException("scan already active");
+        if(!sharedLedger)ledger=new FpRunLedger();redNames.clear();twins.clear();group.clear();
         this.onlyLocal=onlyLocal; players.clear();histories.clear();visited.clear();matches.clear();unresolved.clear();lateHistories.clear();lateWire=null;tailUntil=0;dupeCount=historyCount=0;
         LinkedHashMap<String,String> unique=new LinkedHashMap<>();for(String name:names)if(FpProtocol.valid(name))unique.putIfAbsent(FpProtocol.key(name),name);
         players.addAll(unique.values()); nextSendAt=Math.max(clock.getAsLong(),lastSent+COMMAND_GAP_MS);target=null;phase=Phase.DUPE;attempts=0;
@@ -60,6 +81,10 @@ public final class FpScan {
             String text=line.text(),lower=FpProtocol.normalize(text);
             if(routeLate(text,lower))continue;
             if(target==null)continue;
+            String refusal=lower.replaceFirst("^ошибка\\s*:\\s*","");
+            if(refusal.matches("(?:игрок|player|цель) (?:не найден|не в сети|not found|not online)[.!]?")){
+                lastRelevant=clock.getAsLong();doneTarget("unavailable");continue;
+            }
             // Explicit server refusals, not arbitrary chat containing these words.
             if(lower.startsWith("нет прав")||lower.startsWith("недостаточно прав")||lower.startsWith("you do not have permission")
                     ||lower.startsWith("неизвестная или неполная команда")||lower.startsWith("unknown command")) {stop("Сервер отклонил команду: "+text);return;}
@@ -76,7 +101,7 @@ public final class FpScan {
                     if(nick.start()>0 && text.charAt(nick.start()-1)=='[')continue;
                     boolean eligible=line.eligibleName(nick.start(),nick.end());
                     port.log("DUPE NAME nick="+nick.group(1)+" eligible-yellow-red="+eligible);
-                    if(eligible)dupeNames.putIfAbsent(FpProtocol.key(nick.group(1)),nick.group(1));
+                    if(eligible){dupeNames.putIfAbsent(FpProtocol.key(nick.group(1)),nick.group(1));group.add(new FpRunLedger.Account(nick.group(1),line.redName(nick.start(),nick.end())));}
                 }
             } else {
                 var h=HIST.matcher(text);if(h.find()){if(h.group(1).equalsIgnoreCase(target)){header=true;expected=Math.min(10000,Integer.parseInt(h.group(2)));lastRelevant=clock.getAsLong();}continue;}
@@ -98,7 +123,7 @@ public final class FpScan {
             }
         }
     }
-    private static boolean terminalStatus(String text){return FpProtocol.normalize(text).matches(".*\\[(?:активный|истек|снят|неактивный)]\\s*$");}
+    private static boolean terminalStatus(String text){return FpProtocol.normalize(text).matches(".*\\[(?:активный|истек|снят|неактивный|горит)]\\s*$");}
     private boolean routeLate(String text,String lower) {
         if(lower.startsWith("нет прав")||lower.startsWith("недостаточно прав")||lower.startsWith("you do not have permission")
                 ||lower.startsWith("неизвестная или неполная команда")||lower.startsWith("unknown command")
@@ -134,18 +159,32 @@ public final class FpScan {
         if(!relevant)return false;
         tailUntil=clock.getAsLong()+FINAL_TAIL_MS;
         if(late.ban&&late.seen&&FpProtocol.market(late.reason)) {
-            if(matches.putIfAbsent(FpProtocol.key(late.nick),late.nick)==null)port.log("LATE MATCH nick="+late.nick+" reason="+late.reason);
+            if(!self(late.nick)){ledger.findings.putIfAbsent(FpProtocol.key(late.nick),late.nick);if(matches.putIfAbsent(FpProtocol.key(late.nick),late.nick)==null)port.log("LATE MATCH nick="+late.nick+" reason="+late.reason);}
         }
         port.log("LATE HISTORY nick="+late.nick+" text="+text);
         return true;
     }
     private void finishEntry() {
-        if(banEntry&&reasonSeen&&FpProtocol.market(reason)) {
-            matches.putIfAbsent(FpProtocol.key(target),target);port.log("MATCH nick="+target+" reason="+reason);
+        if(banEntry&&reasonSeen&&FpProtocol.market(reason)&&!self(target)) {
+            ledger.findings.putIfAbsent(FpProtocol.key(target),target);matches.putIfAbsent(FpProtocol.key(target),target);port.log("MATCH nick="+target+" reason="+reason);
         }
     }
     private Map<String,String> local() {Map<String,String> result=new HashMap<>();for(String n:port.online())if(FpProtocol.valid(n))result.put(FpProtocol.key(n),n);return result;}
-    private void resetResponse() {header=body=dupeComplete=recordComplete=historyStarted=banEntry=reasonSeen=reasonOpen=false;dupeNames.clear();reason="";recordCount=expected=0;}
+    private void resetResponse() {header=body=dupeComplete=recordComplete=historyStarted=banEntry=reasonSeen=reasonOpen=false;dupeNames.clear();group.clear();reason="";recordCount=expected=0;}
+    private void useGroup(List<FpRunLedger.Account> accounts){
+        Map<String,String> tab=onlyLocal||accounts.stream().anyMatch(FpRunLedger.Account::red)?local():Map.of();
+        for(var account:accounts){
+            String key=FpProtocol.key(account.nick());
+            if(account.red()){
+                redNames.add(key);var associated=twins.computeIfAbsent(key,k->new LinkedHashMap<>());
+                for(var other:accounts)if(!other.red()&&!key.equals(FpProtocol.key(other.nick()))&&tab.containsKey(FpProtocol.key(other.nick())))associated.putIfAbsent(FpProtocol.key(other.nick()),tab.get(FpProtocol.key(other.nick())));
+            }
+            if(self(account.nick())){port.log("SKIP current account nick="+account.nick());continue;}
+            if(onlyLocal&&!tab.containsKey(key))continue;
+            if(ledger.findings.containsKey(key))matches.putIfAbsent(key,ledger.findings.get(key));
+            if(!ledger.histSent.contains(key)&&visited.add(key))histories.add(account.nick());
+        }
+    }
     private void sendTarget() {
         resetResponse();attempts++;sentAt=lastRelevant=clock.getAsLong();long gap=sentAt-lastSent;lastSent=sentAt;nextSendAt=sentAt+COMMAND_GAP_MS;
         String command=(phase==Phase.DUPE?"dupeip ":"hist ")+target+(phase==Phase.HIST?" ban 100":"");
@@ -154,20 +193,28 @@ public final class FpScan {
     private void doneTarget(String why) {
         port.log("END phase="+phase+" nick="+target+" reason="+why+" records="+recordCount+" expected="+expected+" elapsedMs="+(clock.getAsLong()-lastSent));
         if(phase==Phase.DUPE) {
-            dupeCount++;Map<String,String> tab=onlyLocal?local():Map.of();
-            for(var n:dupeNames.entrySet())if((!onlyLocal||tab.containsKey(n.getKey()))&&visited.add(n.getKey()))histories.add(tab.getOrDefault(n.getKey(),n.getValue()));
+            dupeCount++;ledger.groups.put(FpProtocol.key(target),List.copyOf(group));useGroup(group);
             phase=histories.isEmpty()?Phase.DUPE:Phase.HIST;
-        } else {finishEntry();historyCount++;if(histories.isEmpty())phase=Phase.DUPE;}
+        } else {
+            finishEntry();historyCount++;
+            // Keep EVERY completed owner, not just empty histories: the displayed
+            // limit counts events differently, and later records may still arrive.
+            LateHistory late=new LateHistory(target);late.started=historyStarted;late.ban=banEntry;late.reason=reason;late.seen=reasonSeen;late.open=reasonOpen;
+            lateHistories.put(FpProtocol.key(target),late);lateWire=FpProtocol.key(target);
+            if(header&&expected>0&&(!historyStarted||recordCount<expected))tailUntil=Math.max(tailUntil,lastRelevant+FINAL_TAIL_MS);
+            if(++ledger.completed%20==0){port.log("CHAT CLEAR histories="+ledger.completed+" preserved="+matches.size());port.clearChat();}
+            if(histories.isEmpty())phase=Phase.DUPE;
+        }
         target=null;attempts=0;nextSendAt=Math.max(lastRelevant+COMMAND_GAP_MS,lastSent+COMMAND_GAP_MS);
     }
     public void tick() {
         own();if(!active())return;long now=clock.getAsLong();
         if(target!=null) {
-            // A populated header normally reports the actual count. Do not finish on
-            // the last entry's first line: its reason may arrive in a later packet.
+            // The server's advertised limit is NOT its returned record count.
+            // Advance after a structurally complete reason, never on the entry line.
             // Pump only after packet processing; never recursively send from accept().
             boolean ready=header&&(phase==Phase.DUPE?body&&dupeComplete:
-                    expected==0||recordCount>=expected&&recordComplete);
+                    expected==0&&!historyStarted||recordComplete);
             if(ready&&now-lastRelevant>=COMMAND_GAP_MS) {doneTarget("response complete");}
             // A header-only reply can have ANY limit. The limit is not evidence
             // that a history entry exists. Use only the normal queue gap, after
@@ -178,20 +225,24 @@ public final class FpScan {
                 doneTarget("header-only empty history (normal 5 ms queue gap)");
             }
             else if(now-sentAt>=6000) {
-                if(attempts<3) {port.log("INCOMPLETE retry records="+recordCount+" expected="+expected);nextSendAt=Math.max(now+500,lastSent+COMMAND_GAP_MS);sentAt=now+500;resetResponse();}
-                else {unresolved.add((phase==Phase.DUPE?"dupeip ":"hist ")+target);doneTarget("timeout after 3 attempts");}
+                port.log("INCOMPLETE advance without duplicate request records="+recordCount+" advertisedLimit="+expected);
+                unresolved.add((phase==Phase.DUPE?"dupeip ":"hist ")+target);doneTarget("no complete response; retained late owner");
             }
-            // Retry only after its drain interval; a late response renews relevant time.
-            if(target!=null&&!header&&sentAt>lastSent&&now>=sentAt) {sendTarget();}
             if(target!=null)return;
         }
         if(now<nextSendAt)return;
         while(phase==Phase.HIST&&!histories.isEmpty()) {
-            String name=histories.removeFirst();if(!onlyLocal||local().containsKey(FpProtocol.key(name))){target=name;break;}
+            String name=histories.removeFirst();if(!self(name)&&(!onlyLocal||local().containsKey(FpProtocol.key(name)))&&ledger.histSent.add(FpProtocol.key(name))){target=name;break;}
             port.log("SKIP left TAB nick="+name);
         }
         if(phase==Phase.HIST&&target==null)phase=Phase.DUPE;
-        if(target==null&&!players.isEmpty())target=players.removeFirst();
+        while(target==null&&!players.isEmpty()){
+            String name=players.removeFirst();String key=FpProtocol.key(name);
+            if(self(name)){port.log("SKIP current account dupeip="+name);continue;}
+            if(ledger.dupeSent.add(key)){target=name;break;}
+            port.log("CACHE dupeip="+name);dupeCount++;useGroup(ledger.groups.getOrDefault(key,List.of()));
+            if(!histories.isEmpty()){phase=Phase.HIST;nextSendAt=now;return;}
+        }
         if(target==null){
             // Once at the end only; never a per-nickname cooldown. Other queries
             // normally cover this tail interval with their ordinary network RTT.

@@ -18,7 +18,7 @@ public final class FpSmoke {
             }
             if(tick==180){
                 require(preview[0]!=null&&preview[0].frames>0,"native Player container render frames");
-                Files.writeString(report,"PASS native network mixin\nPASS original Text colors and timestamps\nPASS red and dark red names\nPASS 12 inventory command forms and legacy aliases\nPASS actual item registry/custom-name data components\nPASS 36 server slots excluding viewer inventory\nPASS loaded-empty/native inventory queue results\nPASS native Player container GUI render\nPASS updater save hook\nPASS atomic root result file\n");
+                Files.writeString(report,"PASS native network mixin\nPASS original Text colors and timestamps\nPASS red and dark red names\nPASS 6 inventory command forms; 6ubaa absent; update on/off parse\nPASS actual item registry/custom-name data components\nPASS 36 server slots excluding viewer inventory\nPASS loaded-empty/native inventory queue results\nPASS native Player container GUI and themed HUD render\nPASS gradient Unicode and foreign text isolation\nPASS updater save hook\nPASS atomic root result file\n");
                 System.out.println("FP_SMOKE_PASS "+report);c.setScreen(null);c.scheduleStop();return;
             }
             Class<?> handler=net.minecraft.client.network.ClientPlayNetworkHandler.class;

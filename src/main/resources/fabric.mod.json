@@ -10,6 +10,9 @@
   "license": "All Rights Reserved",
   "environment": "client",
   "entrypoints": {
+    "preLaunch": [
+      "net.spidiboost.sixubaafp.ReserveUpdater"
+    ],
     "client": [
       "net.spidiboost.sixubaafp.FpClient",
       "net.spidiboost.sixubaafp.updates.SharedBootstrap"

@@ -17,11 +17,11 @@ class RedAccountTest {
         h.hist("6ubaa","забанен","FP","Истек");h.hist("Online","забанен","Funpay","Активный");h.drain();
         assertEquals(List.of("6ubaa","Online"),h.result.names());assertTrue(h.sent.stream().noneMatch(s->s.contains("Offline")));
     }
-    @Test void productionModeChecksYellowAndRedOfflineAccountsWithoutAnyTabLookup(){
+    @Test void productionModeChecksYellowAndRedOfflineAccountsWithoutTabFiltering(){
         long[] time={0};var sent=new java.util.ArrayList<String>();var results=new java.util.ArrayList<FpScan.Result>();
         var scan=new FpScan(new FpScan.Port(){
             public void send(String command){sent.add(command);}
-            public java.util.Collection<String> online(){throw new AssertionError("FP account scan must not read TAB");}
+            public java.util.Collection<String> online(){return List.of("Owner");}
             public void log(String value){}public void finish(FpScan.Result r){results.add(r);}
         },()->time[0]);
         scan.start(List.of("Owner"),false);

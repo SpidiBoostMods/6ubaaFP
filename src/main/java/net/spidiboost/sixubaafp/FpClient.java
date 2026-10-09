@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
+import java.io.IOException;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.util.Identifier;
 
@@ -26,7 +27,12 @@ public final class FpClient implements ClientModInitializer {
     public static FpClient INSTANCE;
     private MinecraftClient client; private Path result,run;
     private FpScan scan;private FullRun full;private boolean scanForFull,pumping;
+    private FpRunLedger fpLedger;
+    private final Set<String> runUnresolved=new LinkedHashSet<>();
     private InventoryScan inventory;private InventoryQuery inventoryQuery;private boolean inventoryMode;
+    private CompletableFuture<ResultWatch> watcher;private FpHud.View lastHud;
+    private List<String> lastCheckpoint=List.of();
+    private long hudUntil,noticeUntil,nextOverlay,nextUpdate;private String notice="",lastUpdate="";private boolean updateRequested;
     private ClientConnection connection;private long epoch,position,tabRevision,scanEpoch,flushAt;
     private int menuSync=-1;private String menuTitle="";
     private final ExecutorService io=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"6ubaaFP-files");t.setDaemon(true);return t;});
@@ -38,16 +44,19 @@ public final class FpClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(c->pump());
         ClientLifecycleEvents.CLIENT_STOPPING.register(c->{stop("Клиент закрывается.");flush();io.shutdown();try{io.awaitTermination(3,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}});
         net.spidiboost.sixubaafp.updates.SharedUpdater.preserve("sixubaafp",()->stop("Сохранение перед обновлением."));
+        net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((context,ticks)->{if(fullActive()||scanActive()||now()<hudUntil)FpHud.draw(context,hudView());});
         if(Boolean.getBoolean("sixubaafp.smoke")) FpSmoke.register();
     }
     void registerCommands(com.mojang.brigadier.CommandDispatcher<FabricClientCommandSource> dispatcher) {
-            for(String alias:List.of("6ubaafp","6ubaa")) {
-            var root=ClientCommandManager.literal(alias);
+            var root=ClientCommandManager.literal("6ubaafp");
             root.then(ClientCommandManager.literal("start").executes(ctx->{start(false);return 1;}));
             root.then(ClientCommandManager.literal("full").executes(ctx->{start(true);return 1;}));
             root.then(ClientCommandManager.literal("stop").executes(ctx->{stop("Остановлено пользователем.");return 1;}));
             root.then(ClientCommandManager.literal("status").executes(ctx->{message(status());return 1;}));
             root.then(ClientCommandManager.literal("open").executes(ctx->{open();return 1;}));
+            root.then(ClientCommandManager.literal("update").executes(ctx->{updateStatus();return 1;})
+                    .then(ClientCommandManager.literal("on").executes(ctx->{setRestart(true);return 1;}))
+                    .then(ClientCommandManager.literal("off").executes(ctx->{setRestart(false);return 1;})));
             for(String sub:List.of("inv","invsee")) {
                 var inv=ClientCommandManager.literal(sub).executes(ctx->{inventoryUsage();return 0;});
                 inv.then(inventoryArgument(false));
@@ -56,9 +65,25 @@ public final class FpClient implements ClientModInitializer {
                 root.then(inv);
             }
             dispatcher.register(root);
-            }
     }
-    private void inventoryUsage(){message("/6ubaa inv [none|full] minecraft:compass, Алмазный меч — укажи предметы.");}
+    private void inventoryUsage(){message("/6ubaafp inv [none|full] minecraft:compass, Алмазный меч — укажи предметы.");}
+    private void setRestart(boolean enabled){
+        try{net.spidiboost.sixubaafp.updates.RestartPolicy.set(client.runDirectory.toPath(),enabled);
+            message("Автоперезапуск "+(enabled?"включён":"выключен")+" · загрузка обновлений остаётся включённой.");
+            net.spidiboost.sixubaafp.updates.SharedUpdater.preferenceChanged();updateStatus();
+        }catch(Exception e){message("Ошибка сохранения настройки обновления: "+e.getMessage());}
+    }
+    private void updateStatus(){net.spidiboost.sixubaafp.updates.SharedUpdater.requestCheck();showUpdate();updateRequested=true;nextUpdate=now()+250;}
+    private void showUpdate(){
+        var state=net.spidiboost.sixubaafp.updates.SharedUpdater.status("sixubaafp");
+        String current=net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sixubaafp").orElseThrow().getMetadata().getVersion().getFriendlyString();
+        String latest=state.getOrDefault("latest","");boolean enabled=net.spidiboost.sixubaafp.updates.RestartPolicy.enabled(client.runDirectory.toPath());
+        String availability=state.getOrDefault("state","checking");
+        String remote=latest.isBlank()?(availability.equals("checking")?"проверяем":"нет данных"):latest;
+        String text="Обновления · установлена "+current+" · GitHub "+remote+" · автоперезапуск "+(enabled?"ВКЛ":"ВЫКЛ");
+        String detail=state.getOrDefault("status","Проверяем доступность GitHub…");
+        lastUpdate=state.toString()+enabled;message(text);message(detail);
+    }
     private com.mojang.brigadier.builder.RequiredArgumentBuilder<FabricClientCommandSource,String> inventoryArgument(boolean all) {
         return ClientCommandManager.argument("предметы",StringArgumentType.greedyString()).suggests((context,builder)->{
             String input=builder.getRemaining();int comma=input.lastIndexOf(',');int offset=comma+1;
@@ -98,7 +123,7 @@ public final class FpClient implements ClientModInitializer {
     private void start(boolean all,InventoryQuery query) {
         if(fullActive()||scanActive()){message("Уже идёт проверка. /6ubaafp stop");return;}
         if(!ready()){message("Подключись к серверу и дождись загрузки мира.");return;}
-        full=null;inventoryMode=query!=null;inventoryQuery=query;scan=null;inventory=null;
+        full=null;inventoryMode=query!=null;inventoryQuery=query;scan=null;inventory=null;lastHud=null;hudUntil=0;fpLedger=new FpRunLedger();runUnresolved.clear();
         result=client.runDirectory.toPath().resolve(inventoryMode?"6ubaafp-inv.txt":"6ubaafp.txt");
         closeMenu();connection=client.getNetworkHandler().getConnection();
         try {
@@ -106,7 +131,10 @@ public final class FpClient implements ClientModInitializer {
             Files.createDirectories(run);
             if(Files.exists(result))Files.copy(result,run.resolve("previous-"+result.getFileName()));
             FpFiles.write(result,List.of());
+            Path watchFile=result,watchRun=run;
+            watcher=CompletableFuture.supplyAsync(()->{try{return ResultWatch.start(watchFile,watchRun);}catch(IOException e){log("RESULT WATCH ERROR "+e.getMessage());throw new CompletionException(e);}},io);
         }catch(Exception e){message("Не могу подготовить файл: "+e.getMessage());return;}
+        headline(inventoryMode?"ИНВЕНТАРИ":"ПРОВЕРКА FP",all?"Маршрут · 56 грифов":"Текущий гриф · TAB");
         log("VERSION="+net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sixubaafp").orElseThrow().getMetadata().getVersion().getFriendlyString()+" MODE="+(inventoryMode?"INV ":"FP ")+(all?"FULL":"START")+" query="+query+" file="+result);
         if(!all){startScan(false);return;}
         full=new FullRun(new FullRun.Port(){
@@ -118,14 +146,14 @@ public final class FpClient implements ClientModInitializer {
             public void cancelScan(){FpClient.this.cancelScan("Остановлена текущая проверка грифа.");}
             public List<String> scanMatches(){return scanForFull?FpClient.this.scanMatches():List.of();}
             public boolean persist(List<String> lines){return save(lines);}
-            public void status(String text){log("NAV "+text);message(text);}
-            public void finished(boolean complete,String reason){message(reason+" Файл: "+result);log("FULL END complete="+complete+" reason="+reason);flush();open();}
+            public void status(String text){log("NAV "+text);notice=text;noticeUntil=now()+3000;}
+            public void finished(boolean complete,String reason){finishedUi(complete,reason);log("FULL END complete="+complete+" reason="+reason);flush();open();}
         },1500);
         full.begin(now());
     }
     private boolean startScan(boolean fromFull) {
         if(!ready()||scanActive())return false;
-        scanForFull=fromFull;scanEpoch=epoch;
+        scanForFull=fromFull;scanEpoch=epoch;lastCheckpoint=List.of();
         if(inventoryMode){
             closeMenu();inventory=new InventoryScan(new InventoryScan.Port(){
                 public void send(String command){FpClient.this.send(command);}
@@ -134,28 +162,57 @@ public final class FpClient implements ClientModInitializer {
                 public boolean checkpoint(List<String> names){return scanForFull&&fullActive()?full.checkpoint(names):save(List.of(String.join(" ",names)));}
                 public void log(String value){FpClient.this.log(value);}
                 public void finish(FpScan.Result output){scanFinished(output);}
+                public void notice(String kind,String nick,int attempt){
+                    notice=switch(kind){case "skip"->nick+" · недоступен, пропускаем";case "retry"->nick+" · ждём сервер, повтор "+attempt;case "match"->nick+" · предмет найден";default->"Проверяем "+nick;};
+                    noticeUntil=now()+2000;
+                    if(kind.equals("retry")&&(attempt==2||attempt%5==0))message("Сервер задерживает "+nick+" · повтор "+attempt+". Продолжу ожидание; /6ubaafp stop — остановить.");
+                }
             },FpClient::now,inventoryQuery);
             List<String> names=tab();message("Проверяю инвентари TAB: "+names.size()+" игроков.");inventory.start(names);return true;
         }
         scan=new FpScan(new FpScan.Port(){
             public void send(String command){FpClient.this.send(command);}
             public Collection<String> online(){return tab();}
+            public String currentName(){return client.player==null?"":client.player.getGameProfile().getName();}
+            public void clearChat(){client.inGameHud.getChatHud().clear(false);}
             public void log(String text){FpClient.this.log(text);}
             public void finish(FpScan.Result output){
                 scanFinished(output);
             }
-        },FpClient::now);
+        },FpClient::now,fpLedger);
         List<String> names=tab();message("Запрашиваю /dupeip для "+names.size()+" игроков. Проверяю все жёлтые и красные аккаунты, включая офлайн.");
         scan.start(names,false);return true;
     }
     private void scanFinished(FpScan.Result output){
                 log("SCAN END complete="+output.complete()+" matches="+output.names()+" unresolved="+output.unresolved());
-                try{Files.writeString(run.resolve("unresolved.txt"),String.join("\n",output.unresolved()),StandardCharsets.UTF_8);}catch(Exception e){log("UNRESOLVED WRITE ERROR "+e);}
+                runUnresolved.addAll(output.unresolved());
+                try{Files.writeString(run.resolve("unresolved.txt"),String.join("\n",runUnresolved),StandardCharsets.UTF_8);}catch(Exception e){log("UNRESOLVED WRITE ERROR "+e);}
                 if(scanForFull&&fullActive()) {
                     if(output.reason().startsWith("Сервер отклонил")||(inventoryMode&&!output.complete()))full.stop(output.reason());
-                    else full.scanFinished(output.complete(),output.names(),output.reason(),now());
+                    else {boolean exhausted=!inventoryMode&&scan!=null&&scan.exhausted();
+                        if(exhausted&&!output.complete())message("Гриф #"+full.grief()+": неполные ответы "+output.unresolved().size()+" · сохранены в журнале; продолжаю маршрут без повторных запросов.");
+                        full.scanFinished(output.complete()||exhausted,output.names(),output.reason(),now());}
                 }
-                else if(!scanForFull){save(List.of(String.join(" ",output.names())));message(output.reason()+" Найдено: "+output.names().size()+". Файл: "+result);flush();open();}
+                else if(!scanForFull){save(List.of(String.join(" ",output.names())));finishedUi(output.complete(),output.reason());flush();open();}
+    }
+    private void finishedUi(boolean complete,String reason){
+        if(!runUnresolved.isEmpty()&&!inventoryMode)reason+=" Неполных запросов: "+runUnresolved.size()+"; список в журнале запуска (unresolved.txt).";
+        lastHud=hudView();hudUntil=now()+6000;headline(complete?"ГОТОВО":"ОСТАНОВЛЕНО","Результат сохранён");
+        message(reason);
+        var link=FpTheme.message("Результат · "+result.getFileName()+"  ↗").styled(s->s.withClickEvent(new net.minecraft.text.ClickEvent(net.minecraft.text.ClickEvent.Action.RUN_COMMAND,"/6ubaafp open")).withHoverEvent(new net.minecraft.text.HoverEvent(net.minecraft.text.HoverEvent.Action.SHOW_TEXT,Text.literal(result.toAbsolutePath().toString()))));
+        client.inGameHud.getChatHud().addMessage(link);notice="Результат сохранён · "+result.getFileName();noticeUntil=now()+6000;
+    }
+    public FpHud.View hudView(){
+        if(!scanActive()&&!fullActive()&&lastHud!=null)return lastHud;
+        if(inventoryMode&&inventory!=null){var p=inventory.progress();return new FpHud.View("ИНВЕНТАРИ",p.target(),p.phase(),p.processed(),p.total(),p.found(),p.skipped(),fullActive()?full.grief():0,scanActive());}
+        if(scan!=null){var p=scan.progress();return new FpHud.View("FP • ИСТОРИЯ",p.target(),p.phase(),p.processed(),p.total(),p.found(),0,fullActive()?full.grief():0,scanActive());}
+        return new FpHud.View(inventoryMode?"ИНВЕНТАРИ":"FP • ИСТОРИЯ","",fullActive()?full.phaseLabel():"Подготовка",0,0,0,0,fullActive()?full.grief():0,fullActive());
+    }
+    private void headline(String heading,String subtitle){
+        if(client.player==null)return;int width=client.getWindow().getScaledWidth()-24;
+        String fitted=client.textRenderer.trimToWidth(FpTheme.title(heading),Math.max(24,width/4)).getString();
+        String hint=client.textRenderer.trimToWidth(FpTheme.small(subtitle),Math.max(24,width/2)).getString();
+        client.inGameHud.setTitleTicks(8,40,16);client.inGameHud.setSubtitle(FpTheme.small(hint));client.inGameHud.setTitle(FpTheme.title(fitted));
     }
     private void send(String command){if(client.getNetworkHandler()==null||!client.getNetworkHandler().getConnection().isOpen())throw new IllegalStateException("Нет игрового соединения");client.getNetworkHandler().sendChatCommand(command);}
     public void stop(String reason){if(fullActive())full.stop(reason);else cancelScan(reason);}
@@ -174,10 +231,21 @@ public final class FpClient implements ClientModInitializer {
             if(scanActive()) {
                 if(!connected)cancelScan("Соединение потеряно; сохранён частичный результат.");
                 else if(scanEpoch!=epoch){if(inventoryMode)stop("Сервер/мир изменился во время проверки.");else scan.stop("Сервер/мир изменился во время проверки.");}
-                else if(ready()){if(inventoryMode)inventory.tick();else scan.tick();}
+                else if(ready()){if(inventoryMode)inventory.tick();else {
+                    scan.tick();var matches=scan.matches();if(scanActive()&&!matches.equals(lastCheckpoint)){
+                        if(!(scanForFull&&fullActive()?full.checkpoint(matches):save(List.of(String.join(" ",matches)))))stop("Ошибка сохранения промежуточного результата.");
+                        lastCheckpoint=matches;
+                    }
+                }}
             }
         }catch(Exception error){log("ERROR "+error+" "+Arrays.toString(error.getStackTrace()));stop("Ошибка проверки: "+error.getMessage());}
         finally{pumping=false;if(now()-flushAt>=250){flushAt=now();flush();}}
+        if(client.player!=null&&now()>=nextOverlay&&(scanActive()||fullActive()||now()<noticeUntil)){
+            nextOverlay=now()+250;var p=hudView();String value=now()<noticeUntil?notice:"6ubaaFP · "+p.done()+" / "+p.total()+" · найдено "+p.matches();client.inGameHud.setOverlayMessage(FpTheme.small(value),false);
+        }
+        if(updateRequested&&now()>=nextUpdate){nextUpdate=now()+250;var state=net.spidiboost.sixubaafp.updates.SharedUpdater.status("sixubaafp");boolean enabled=net.spidiboost.sixubaafp.updates.RestartPolicy.enabled(client.runDirectory.toPath());
+            if(!state.getOrDefault("state","checking").equals("checking")){if(!(state.toString()+enabled).equals(lastUpdate))showUpdate();updateRequested=false;}
+        }
     }
     private void closeMenu(){if(client.player!=null&&client.player.currentScreenHandler!=client.player.playerScreenHandler){client.player.closeHandledScreen();menuSync=-1;}}
     private static ServerMenus.Item item(ItemStack stack){return new ServerMenus.Item(Registries.ITEM.getId(stack.getItem()).toString(),stack.isEmpty()?"":stack.getName().getString());}
@@ -203,8 +271,8 @@ public final class FpClient implements ClientModInitializer {
     }
     public void message(Text text,boolean overlay){if(overlay||!scanActive())return;try{if(inventoryMode)inventory.message(styled(text));else scan.accept(styled(text));}catch(Exception e){log("PARSE ERROR "+e);stop("Ошибка разбора; смотри debug.log.");}}
     private boolean save(List<String> lines){try{FpFiles.write(result,lines);return true;}catch(Exception e){log("FILE ERROR "+e);message("Ошибка записи: "+e.getMessage());return false;}}
-    private void open(){if(result==null||!Files.isRegularFile(result)){message("Файл ещё не создан.");return;}Path file=result.toAbsolutePath();io.execute(()->{try{Util.getOperatingSystem().open(file.toFile());}catch(Exception e){client.execute(()->message("Не удалось открыть "+file+": "+e.getMessage()));}});}
-    private void message(String value){if(client.player!=null)client.player.sendMessage(Text.literal("[6ubaaFP] "+value),false);}
+    private void open(){if(result==null||!Files.isRegularFile(result)){message("Файл ещё не создан.");return;}Path file=result.toAbsolutePath();var guard=watcher;boolean finished=!scanActive()&&!fullActive();io.execute(()->{try{if(finished&&guard!=null&&guard.get(6,TimeUnit.SECONDS).open())return;Util.getOperatingSystem().open(file.toFile());}catch(Exception e){try{Util.getOperatingSystem().open(file.toFile());}catch(Exception failed){client.execute(()->message("Не удалось открыть "+file+": "+failed.getMessage()));}}});}
+    private void message(String value){String lower=value.toLowerCase(Locale.ROOT);boolean warning=lower.startsWith("ошибка")||lower.startsWith("не могу")||lower.startsWith("неверный")||lower.startsWith("неизвестный");client.inGameHud.getChatHud().addMessage(warning?FpTheme.error(value):FpTheme.message(value));if(warning)headline("ВНИМАНИЕ","Подробности в чате");}
     private void log(String value){if(run!=null)logs.add(new Log(run.resolve("debug.log"),LocalDateTime.now()+" ["+Thread.currentThread().getName()+"] "+value+"\n"));}
     private void flush(){Map<Path,StringBuilder> batch=new LinkedHashMap<>();Log l;while((l=logs.poll())!=null)batch.computeIfAbsent(l.path(),k->new StringBuilder()).append(l.text());if(batch.isEmpty()||io.isShutdown())return;io.execute(()->batch.forEach((path,value)->{try{Files.writeString(path,value,StandardCharsets.UTF_8,StandardOpenOption.CREATE,StandardOpenOption.APPEND);}catch(Exception e){client.execute(()->message("Ошибка журнала: "+e.getMessage()));}}));}
 }

@@ -52,6 +52,10 @@ public final class FpProtocol {
             for(int i=begin;i<end;i++) if(!yellow(colors[i])&&!red(colors[i])) return false;
             return end>begin;
         }
+        public boolean redName(int begin,int end) {
+            for(int i=begin;i<end;i++) if(!red(colors[i])) return false;
+            return end>begin;
+        }
     }
     public static boolean yellow(int color) {
         if(color<0) return false;
