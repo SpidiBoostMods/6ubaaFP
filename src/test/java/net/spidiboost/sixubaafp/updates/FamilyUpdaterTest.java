@@ -66,6 +66,38 @@ class FamilyUpdaterTest {
     }
     @Test void helperWaitsForOwningJvmAndRestartsOnceAfterAllFilesChange()throws Exception { helperExit(true); }
     @Test void switchingOffWhileHelperWaitsStillInstallsButNeverRestarts()throws Exception { helperExit(false); }
+    @Test void offDownloadsToModsWithoutRewritingLiveJarsThenRemovesOldVersions()throws Exception {
+        var p=plan(4);ModsDownload.publish(p);assertOriginals(p);
+        for(var c:p.changes())assertEquals(c.newHash(),BatchInstall.hash(c.destination()));
+        ModsDownload.publish(p);BatchInstall.install(p);
+        for(var c:p.changes()){assertFalse(Files.exists(c.target()));assertEquals(c.newHash(),BatchInstall.hash(c.destination()));assertFalse(ModsDownload.owns(c));}
+        assertEquals("protected",Files.readString(p.game().resolve("mods/AdminTools.jar")));
+    }
+    @Test void eachEntryRechecksManifestButReusesAlreadyVerifiedDownload()throws Exception {
+        var p=plan(1);var mod=ModCatalog.ALL.get(2);Path artifact=root.resolve("valid.jar");writeArtifact(artifact,mod,mod.id(),"SpidiBoost");byte[] jar=Files.readAllBytes(artifact);
+        byte[] manifest=("version=1.2.3\nminecraft=1.21.4\nartifact="+mod.artifact("1.2.3")+"\nsha256="+BatchInstall.hash(artifact)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var manifests=new AtomicInteger();var downloads=new AtomicInteger();
+        var updater=new SharedUpdater((uri,limit)->{if(uri.equals(mod.latest())){manifests.incrementAndGet();return manifest;}downloads.incrementAndGet();return jar;});
+        var type=Class.forName(SharedUpdater.class.getName()+"$Installed");var ctor=type.getDeclaredConstructors()[0];ctor.setAccessible(true);var installed=ctor.newInstance(mod,"1.2.2",p.changes().getFirst().target());
+        var prepare=SharedUpdater.class.getDeclaredMethod("prepare",type,Path.class,Path.class);prepare.setAccessible(true);
+        var first=(BatchPlan.Change)prepare.invoke(updater,installed,p.game(),p.game().resolve(".spidiboost-updates"));
+        assertNotNull(first);assertEquals(first,prepare.invoke(updater,installed,p.game(),p.game().resolve(".spidiboost-updates")));
+        assertEquals(2,manifests.get());assertEquals(1,downloads.get());assertEquals("1.2.3",SharedUpdater.status(mod.id()).get("latest"));
+    }
+    @Test void offNeverOverwritesForeignNewJarEvenWithIdenticalHash()throws Exception {
+        var p=plan(1);var c=p.changes().getFirst();Files.copy(c.staged(),c.destination());
+        assertThrows(IOException.class,()->ModsDownload.publish(p));assertOriginals(p);assertEquals(c.newHash(),BatchInstall.hash(c.destination()));
+    }
+    @Test void offTamperedDownloadOrMarkerCannotAuthorizeRemoval()throws Exception {
+        var p=plan(1);ModsDownload.publish(p);var c=p.changes().getFirst();
+        Files.writeString(c.destination(),"user changed");assertThrows(IOException.class,()->BatchInstall.install(p));
+        assertOriginals(p);ModsDownload.discard(c);assertEquals("user changed",Files.readString(c.destination()));
+    }
+    @Test void offDownloadRollbackPreservesOldVersionsAndBackups()throws Exception {
+        var p=plan(4);ModsDownload.publish(p);var n=new AtomicInteger();
+        assertThrows(IllegalStateException.class,()->BatchInstall.install(p,c->{if(n.incrementAndGet()==3)throw new IllegalStateException("Injected commit failure");}));
+        assertOriginals(p);for(var c:p.changes())assertFalse(Files.exists(c.destination()));
+    }
     private void helperExit(boolean restart)throws Exception {
         var p=plan(4);Path java=Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name").startsWith("Windows")?"java.exe":"java");Path code=root.resolve("Fixture.java");
         Files.writeString(code,"import java.nio.file.*; public class Fixture {public static void main(String[] a)throws Exception{if(a.length==0){System.out.println(\"LIVE\");System.out.flush();System.in.read();}else Files.writeString(Path.of(a[0]),\"restart\\n\",StandardOpenOption.CREATE,StandardOpenOption.APPEND);}}");
@@ -76,7 +108,7 @@ class FamilyUpdaterTest {
         Path agent=p.game().resolve(".spidiboost-updates/agent.jar");Files.copy(Path.of("build/shared-agent/sixubaafp-shared-update-agent.jar"),agent);Path marker=fixtureDir.resolve("restarted.txt");
         var actual=new BatchPlan(old.pid(),p.game(),p.changes(),List.of(),fixtureDir,List.of(java.toString(),"-cp",".","Fixture","restarted.txt"),false);
         Process helper=new ProcessBuilder(java.toString(),"-jar","agent.jar").directory(agent.getParent().toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
-        try{try(var pipe=helper.getOutputStream()){actual.write(pipe);}assertEquals("READY",new BufferedReader(new InputStreamReader(helper.getInputStream())).readLine());assertOriginals(p);assertFalse(Files.exists(marker));RestartPolicy.set(p.game(),restart);old.getOutputStream().write(1);old.getOutputStream().flush();assertTrue(old.waitFor(10,TimeUnit.SECONDS));assertTrue(helper.waitFor(20,TimeUnit.SECONDS));assertEquals(0,helper.exitValue());
+        try{try(var pipe=helper.getOutputStream()){actual.write(pipe);}assertEquals("READY",new BufferedReader(new InputStreamReader(helper.getInputStream())).readLine());assertOriginals(p);assertFalse(Files.exists(marker));RestartPolicy.set(p.game(),restart);if(!restart){ModsDownload.publish(actual);assertOriginals(p);}old.getOutputStream().write(1);old.getOutputStream().flush();assertTrue(old.waitFor(10,TimeUnit.SECONDS));assertTrue(helper.waitFor(20,TimeUnit.SECONDS));assertEquals(0,helper.exitValue());
             if(restart){for(int i=0;i<200&&(!Files.exists(marker)||Files.size(marker)==0);i++)Thread.sleep(50);assertEquals("restart\n",Files.readString(marker));}else assertFalse(Files.exists(marker));for(var c:p.changes())assertEquals(c.newHash(),BatchInstall.hash(c.destination()));
         }finally{old.destroyForcibly();helper.destroyForcibly();}
     }

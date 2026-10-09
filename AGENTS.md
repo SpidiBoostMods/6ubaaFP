@@ -9,4 +9,4 @@
 - Shared updater copies are generated from the SpidiCard src/sharedTemplate sources; keep protocol and catalog identical across the four mods. Each relocated copy participates in one ObjectShare election.
 - Never publish credentials, live instances, player results, logs, configs or launcher arguments. Keep licenses for upstream assets.
 - Do not touch AdminTools or user recordings. Use isolated runtime verification.
-- Update only installed family JARs after the game exits; preserve configs/results/other mods and backups. Hist addon removal is allowed only after its complete migration into SpidiBan.
+- Update only installed family JARs; never rewrite a JAR used by the live client. With update off a verified new version may be downloaded as an additional JAR in mods only after an exit helper is ready to remove the old version after exit. Preserve configs/results/other mods and backups. Hist addon removal is allowed only after its complete migration into SpidiBan.

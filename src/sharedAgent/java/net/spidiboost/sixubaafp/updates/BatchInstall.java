@@ -20,7 +20,7 @@ public final class BatchInstall {
             if(!t.getParent().equals(mods)||!dest.getParent().equals(mods)||!paths.add(t)||!destinations.add(dest)
                 ||Files.isSymbolicLink(t)||Files.isSymbolicLink(dest)||!Files.isRegularFile(t)||!t.getFileName().toString().endsWith(".jar")
                 ||!dest.getFileName().toString().matches("[A-Za-z0-9]+-1\\.21\\.4-[0-9]+\\.[0-9]+\\.[0-9]+\\.jar")
-                ||(!dest.equals(t)&&Files.exists(dest))||Files.isSymbolicLink(c.staged())||!c.staged().toRealPath().getParent().equals(dir)
+                ||(!dest.equals(t)&&Files.exists(dest)&&!ModsDownload.owns(c))||Files.isSymbolicLink(c.staged())||!c.staged().toRealPath().getParent().equals(dir)
                 ||!c.oldHash().matches("[a-f0-9]{64}")||!c.newHash().matches("[a-f0-9]{64}")
                 ||!hash(t).equals(c.oldHash())||!hash(c.staged()).equals(c.newHash()))throw new IOException("Invalid or changed batch member");
         }
@@ -50,7 +50,8 @@ public final class BatchInstall {
             for(var c:p.changes()) {
                 beforeCommit.accept(c);
                 if(!hash(c.target()).equals(c.oldHash()))throw new IOException("Mod changed before commit");
-                if(c.destination().equals(c.target())) move(temps.get(c),c.destination(),true);else move(temps.get(c),c.destination(),false);
+                if(c.destination().equals(c.target())) move(temps.get(c),c.destination(),true);
+                else if(!ModsDownload.owns(c)) move(temps.get(c),c.destination(),false);
                 committed.add(c);
                 if(!hash(c.destination()).equals(c.newHash()))throw new IOException("Installed checksum mismatch");
                 if(!c.destination().equals(c.target()))Files.delete(c.target());
@@ -60,13 +61,15 @@ public final class BatchInstall {
             for(var r:removed)try{Files.copy(removedBackups.get(r),r.target(),StandardCopyOption.REPLACE_EXISTING);}catch(IOException rollback){e.addSuppressed(rollback);}
             Collections.reverse(committed);
             for(var c:committed)try {
-                Files.copy(backups.get(c),c.target(),StandardCopyOption.REPLACE_EXISTING);
+                if(!Files.isRegularFile(c.target())||!hash(c.target()).equals(c.oldHash()))Files.copy(backups.get(c),c.target(),StandardCopyOption.REPLACE_EXISTING);
                 if(!c.destination().equals(c.target())&&Files.exists(c.destination())&&hash(c.destination()).equals(c.newHash()))Files.delete(c.destination());
             } catch(IOException rollback){e.addSuppressed(rollback);}
+            // Off-mode downloads not yet committed must not remain as duplicate mods after a failed exit update.
+            for(var c:p.changes())try{ModsDownload.discard(c);}catch(IOException rollback){e.addSuppressed(rollback);}
             throw e;
         } finally { for(Path t:temps.values())Files.deleteIfExists(t); }
         // Cleanup cannot invalidate an already successful transaction.
-        for(var c:p.changes())try{Files.deleteIfExists(c.staged());}catch(IOException ignored){}
+        for(var c:p.changes())try{ModsDownload.forget(c);Files.deleteIfExists(c.staged());}catch(IOException ignored){}
     }
     private static void move(Path from,Path to,boolean replace)throws IOException {
         // ATOMIC_MOVE may overwrite an existing destination even without REPLACE_EXISTING.

@@ -16,6 +16,13 @@ public final class RestartCommand {
             var prism = prism(gameDir, executable);
             if (!prism.isEmpty()) return prism;
         }
+        // Prism's "close launcher after launch" leaves Java parented to the OS.
+        // Discover the native launcher instead of replaying EntryPoint's dead IPC.
+        var fromClasspath = classpathPrism(gameDir, System.getProperty("java.class.path", ""));
+        if (!fromClasspath.isEmpty()) return fromClasspath;
+        var discovered = discoverPrism(gameDir, candidates(gameDir, System.getProperty("os.name"),
+                Path.of(System.getProperty("user.home")), System.getenv()));
+        if (!discovered.isEmpty()) return discovered;
         var info = ProcessHandle.current().info();
         if (info.arguments().isPresent()) return direct(info.command().orElse(""), info.arguments().get());
         // Java 21 ProcessHandle does not expose argv on every Windows installation.
@@ -23,6 +30,58 @@ public final class RestartCommand {
         return snapshot(info.command().orElse(""), ManagementFactory.getRuntimeMXBean().getInputArguments(),
                 System.getProperty("java.class.path", ""), System.getProperty("sun.java.command", ""),
                 FabricLoader.getInstance().getLaunchArguments(false));
+    }
+    public static List<String> classpathPrism(Path gameDir, String classpath) {
+        for (String entry : classpath.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+            if (entry.isBlank()) continue;
+            Path jar;
+            try { jar = Path.of(entry); } catch (InvalidPathException e) { continue; }
+            if (jar.getFileName() == null || !jar.getFileName().toString().equals("NewLaunch.jar") || !Files.isRegularFile(jar)) continue;
+            Path jars = jar.toAbsolutePath().getParent();
+            if (jars == null || jars.getParent() == null) continue;
+            var command = discoverPrism(gameDir, List.of(jars.getParent().resolve("prismlauncher"), jars.getParent().resolve("prismlauncher.exe")));
+            if (!command.isEmpty()) return command;
+        }
+        return List.of();
+    }
+    public static List<String> discoverPrism(Path gameDir, List<Path> candidates) {
+        for (Path candidate : candidates) {
+            if (!Files.isRegularFile(candidate) || !Files.isExecutable(candidate)) continue;
+            var command = prism(gameDir, candidate.toAbsolutePath().normalize().toString());
+            if (!command.isEmpty()) return command;
+        }
+        return List.of();
+    }
+    public static List<Path> candidates(Path gameDir, String os, Path home, Map<String,String> env) {
+        var paths = new LinkedHashSet<Path>();
+        Path game = gameDir.toAbsolutePath().normalize(), instance = game.getParent();
+        if (instance != null && instance.getParent() != null && instance.getParent().getParent() != null) {
+            Path data = instance.getParent().getParent();
+            paths.add(data.resolve("prismlauncher.exe")); paths.add(data.resolve("prismlauncher"));
+        }
+        if (os.startsWith("Mac")) {
+            paths.add(Path.of("/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher"));
+            paths.add(Path.of("/Applications/PrismLauncher.app/Contents/MacOS/prismlauncher"));
+            paths.add(home.resolve("Applications/Prism Launcher.app/Contents/MacOS/prismlauncher"));
+            paths.add(home.resolve("Applications/PrismLauncher.app/Contents/MacOS/prismlauncher"));
+            for (Path apps : List.of(Path.of("/Applications"), home.resolve("Applications"))) {
+                try (var entries = Files.newDirectoryStream(apps, "*Prism*.app")) {
+                    var bundles = new ArrayList<Path>(); entries.forEach(bundles::add); bundles.sort(Comparator.naturalOrder());
+                    for (Path bundle : bundles) paths.add(bundle.resolve("Contents/MacOS/prismlauncher"));
+                } catch (java.io.IOException ignored) { }
+            }
+        } else if (os.startsWith("Windows")) {
+            for (String variable : List.of("LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)")) {
+                String dir = env.get(variable); if (dir == null || dir.isBlank()) continue;
+                paths.add(Path.of(dir, "PrismLauncher", "prismlauncher.exe"));
+                paths.add(Path.of(dir, "Programs", "PrismLauncher", "prismlauncher.exe"));
+            }
+        }
+        String path = env.getOrDefault("PATH", "");
+        for (String dir : path.split(java.util.regex.Pattern.quote(os.startsWith("Windows") ? ";" : ":"))) {
+            if (!dir.isBlank()) paths.add(Path.of(dir, os.startsWith("Windows") ? "prismlauncher.exe" : "prismlauncher"));
+        }
+        return List.copyOf(paths);
     }
     public static List<String> snapshot(String executable, List<String> vmArgs, String classpath,
                                         String mainCommand, String[] gameArgs) {

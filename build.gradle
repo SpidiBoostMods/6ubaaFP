@@ -35,14 +35,20 @@ if (project.hasProperty('fpNative')) {
         programArgs '--username', 'FPQA', '--quickPlaySingleplayer', 'SpidiCard-QA'
         if (project.hasProperty('fpCrash')) vmArg '-Dsixubaafp.qa.crash=true'
         if (project.hasProperty('fpHistory')) vmArg '-Dsixubaafp.qa.history=true'
+        if (project.hasProperty('fpUpdater')) vmArg '-Dsixubaafp.qa.updater=true'
         if (System.getProperty('os.name').startsWith('Mac')) vmArg '-XstartOnFirstThread'
     } }
     tasks.named('runVerification', JavaExec) { doFirst {
         def options = file('build/runtime-verification/options.txt')
         options.parentFile.mkdirs(); options.text = 'onboardAccessibility:false\nlang:ru_ru\nrenderDistance:2\nsimulationDistance:5\nmaxFps:60\npauseOnLostFocus:false\nsoundCategory_master:0.0\n'
-        file(project.hasProperty('fpHistory') ? 'build/runtime-verification/native-history-results.txt' : 'build/runtime-verification/native-results.txt').delete()
+        file(project.hasProperty('fpUpdater') ? 'build/runtime-verification/native-updater-results.txt' : project.hasProperty('fpHistory') ? 'build/runtime-verification/native-history-results.txt' : 'build/runtime-verification/native-results.txt').delete()
     }; doLast {
-        def report = file(project.hasProperty('fpHistory') ? 'build/runtime-verification/native-history-results.txt' : 'build/runtime-verification/native-results.txt')
+        def report = file(project.hasProperty('fpUpdater') ? 'build/runtime-verification/native-updater-results.txt' : project.hasProperty('fpHistory') ? 'build/runtime-verification/native-history-results.txt' : 'build/runtime-verification/native-results.txt')
         if (!report.isFile() || !report.text.contains('PASS') || report.text.contains('FAIL')) throw new GradleException('Native verification failed: ' + report)
+        if (project.hasProperty('fpUpdater')) {
+            def marker=file('build/runtime-verification/updater-restarted.txt')
+            for (int i=0;i<200&&!marker.isFile();i++) Thread.sleep(50)
+            if(!marker.isFile()||!marker.text.contains('PASS'))throw new GradleException('Updater did not launch the isolated restart fixture')
+        }
     } }
 }

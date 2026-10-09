@@ -13,7 +13,7 @@ import static java.nio.file.StandardOpenOption.APPEND;
 public final class NativeProbe implements ClientModInitializer {
     private int step;private long due;private final long deadline=System.nanoTime()+360_000_000_000L;
     private Path session;private boolean screenshot;private InventorySmoke.Preview preview;
-    @Override public void onInitializeClient(){if(Boolean.getBoolean("sixubaafp.qa.history"))new NativeHistoryProbe().register();else ClientTickEvents.END_CLIENT_TICK.register(this::tick);}
+    @Override public void onInitializeClient(){if(Boolean.getBoolean("sixubaafp.qa.updater"))new NativeUpdaterProbe().register();else if(Boolean.getBoolean("sixubaafp.qa.history"))new NativeHistoryProbe().register();else ClientTickEvents.END_CLIENT_TICK.register(this::tick);}
     private static Object field(String name)throws Exception{var f=FpClient.class.getDeclaredField(name);f.setAccessible(true);return f.get(FpClient.INSTANCE);}
     private static InventoryScan scan()throws Exception{return (InventoryScan)field("inventory");}
     private static void command(MinecraftClient c,String value)throws Exception{ClientCommandManager.getActiveDispatcher().execute(value,(FabricClientCommandSource)c.getNetworkHandler().getCommandSource());}

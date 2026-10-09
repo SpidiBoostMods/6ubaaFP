@@ -8,6 +8,17 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RestartPolicyTest {
+    @Test void preferredSixubaaCoordinatorBlocksAnOlderModernCopy() {
+        var values=new HashMap<String,Object>();var preferred=new AtomicReference<Runnable>();
+        Runnable relay=()->{var owner=preferred.get();if(owner!=null)owner.run();};
+        var gate=new AtomicReference<Runnable>(relay);values.put(SharedUpdater.OWNER,relay);
+        values.put(SharedUpdater.RESERVATION,List.of(relay,gate));values.put("spidiboost:update-preferred-sixubaafp-v3",preferred);
+        assertFalse(gate.compareAndSet(null,()->fail("old copy must not win")));
+        var share=(net.fabricmc.loader.api.ObjectShare)java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),new Class[]{net.fabricmc.loader.api.ObjectShare.class},(o,m,a)->switch(m.getName()){case "get"->values.get(a[0]);case "putIfAbsent"->values.putIfAbsent((String)a[0],a[1]);default->throw new UnsupportedOperationException();});
+        if(SharedUpdater.class.getPackageName().equals("net.spidiboost.sixubaafp.updates")) {
+            int[] calls={0};assertTrue(SharedUpdater.claim(share,()->calls[0]++));assertFalse(SharedUpdater.claim(share,()->fail("second owner")));relay.run();assertEquals(1,calls[0]);
+        }else assertFalse(SharedUpdater.claim(share,()->fail("nonpreferred")));
+    }
     @TempDir Path game;
     @Test void defaultOnPersistentOffOnAndCorruptPreferencesFailClosed()throws Exception{
         assertTrue(RestartPolicy.enabled(game));RestartPolicy.set(game,false);assertFalse(RestartPolicy.enabled(game));assertTrue(Files.readString(RestartPolicy.file(game)).contains("autoRestart=false"));RestartPolicy.set(game,true);assertTrue(RestartPolicy.enabled(game));

@@ -15,7 +15,13 @@ public final class UpdateScreen extends Screen {
     public UpdateScreen(Supplier<List<UpdateRow>> rows,String headline,String footer,boolean restarting,Screen previous) {
         super(Text.literal("SpidiBoost — обновления"));this.rows=rows;this.headline=headline;this.footer=footer;this.restarting=restarting;this.previous=previous;
     }
-    @Override protected void init() {if(!restarting)addDrawableChild(ButtonWidget.builder(Text.literal("Продолжить"),b->close()).dimensions(width/2-70,height-35,140,20).build());}
+    @Override protected void init() {
+        if(!restarting)addDrawableChild(ButtonWidget.builder(Text.literal("Продолжить"),b->close()).dimensions(width/2-70,height-35,140,20).build());
+        else addDrawableChild(ButtonWidget.builder(Text.literal("Отложить · update off"),b->{
+            try {RestartPolicy.set(client.runDirectory.toPath(),false);SharedUpdater.preferenceChanged();cancelRestart();}
+            catch(java.io.IOException e){client.inGameHud.getChatHud().addMessage(SharedUpdater.supportMessage("Не удалось сохранить update off."));}
+        }).dimensions(width/2-95,height-35,190,20).build());
+    }
     @Override public boolean shouldCloseOnEsc(){return !restarting;}
     @Override public void close(){if(!restarting&&client!=null)client.setScreen(previous);}
     public void cancelRestart(){if(client!=null)client.setScreen(previous);}

@@ -9,8 +9,13 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class ReserveUpdater implements PreLaunchEntrypoint {
     @Override public void onPreLaunch(){
         var share=FabricLoader.getInstance().getObjectShare();var gate=new AtomicReference<Runnable>();
-        Runnable relay=()->{Runnable owner=gate.get();if(owner!=null)owner.run();};
-        if(share.putIfAbsent("spidiboost:update-coordinator-v1",relay)==null)
+        var preferred=new AtomicReference<Runnable>();
+        Runnable relay=()->{Runnable owner=preferred.get();if(owner!=null)owner.run();};
+        // Older relocated copies see a occupied gate and cannot win the client initialization race.
+        gate.set(relay);
+        if(share.putIfAbsent("spidiboost:update-coordinator-v1",relay)==null){
             share.put("spidiboost:update-reservation-v2",List.of(relay,gate));
+            share.put("spidiboost:update-preferred-sixubaafp-v3",preferred);
+        }
     }
 }
