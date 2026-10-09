@@ -3,17 +3,25 @@ package net.spidiboost.sixubaafp;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.text.Text;
+import java.nio.file.Path;
 
 /** Compact, local-only scan telemetry. No full-screen overlays during ordinary retries. */
 public final class FpHud {
     private FpHud(){}
+    private static HudPlacement placement;
+    public static void configure(Path path){placement=new HudPlacement(path);}
+    public static HudPlacement.Bounds bounds(int sw,int sh){int width=Math.min(248,Math.min(sw-24,Math.max(170,sw/2-24)));return placement.bounds(sw,sh,width,83);}
+    public static boolean press(double x,double y,int button){var c=MinecraftClient.getInstance();return button==0&&FpClient.INSTANCE!=null&&FpClient.INSTANCE.hudVisible()&&placement!=null&&placement.press(x,y,bounds(c.getWindow().getScaledWidth(),c.getWindow().getScaledHeight()));}
+    public static boolean drag(double x,double y,int button){var c=MinecraftClient.getInstance();if(button!=0||placement==null)return false;var b=bounds(c.getWindow().getScaledWidth(),c.getWindow().getScaledHeight());return placement.drag(x,y,c.getWindow().getScaledWidth(),c.getWindow().getScaledHeight(),b.width(),b.height());}
+    public static boolean release(){if(placement==null)return false;try{return placement.release();}catch(java.io.IOException e){MinecraftClient.getInstance().inGameHud.getChatHud().addMessage(FpTheme.error("Не удалось сохранить положение панели."));return true;}}
     public record View(String mode,String target,String detail,int done,int total,int matches,int skipped,int grief,boolean active){}
     public static void draw(DrawContext c,View v){
         var client=MinecraftClient.getInstance();if(client.options.hudHidden)return;
         int width=Math.min(248,Math.min(c.getScaledWindowWidth()-24,Math.max(170,c.getScaledWindowWidth()/2-24))),height=83;if(width<145)return;
         // Keep the panel out of bottom-left chat, right-side scoreboard and vanilla toasts.
         // GUI scale changes logical dimensions, so width adapts instead of covering half the screen.
-        int x=12,y=12;
+        if(placement==null)configure(client.runDirectory.toPath().resolve("config/6ubaafp-hud.properties"));
+        var bounds=bounds(c.getScaledWindowWidth(),c.getScaledWindowHeight());int x=bounds.x(),y=bounds.y();
         panel(c,x,y,width,height,0xe8152024);c.fill(x+10,y+11,x+12,y+26,0xffffbc82);
         c.drawTextWithShadow(client.textRenderer,FpTheme.title("6ubaaFP"),x+20,y+11,0xffffff);
         String label=v.grief()>0?"ГРИФ "+v.grief()+" / 56":v.mode();

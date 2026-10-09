@@ -35,6 +35,7 @@ public final class NativeHistoryProbe {
             require(new HashSet<>(requests).size()==49,"duplicate command");
             require(requests.stream().noneMatch(s->s.contains("FPQA")),"live self queried");
             require(text.contains("Seed00")&&text.contains("Banned (На сервере: Seed00, Seed01, FPQA)"),"late FP/red annotation: "+text);
+            require(!text.contains("Seed02"),"manually unbanned FP account leaked: "+text);
             var ledger=(FpRunLedger)field("fpLedger");require(ledger.completed==25,"history progress");
             String log=Files.readString(session.resolve("debug.log"));require(log.contains("CHAT CLEAR histories=20"),"native chat clearing not wired");
             require(!marker(c),"displayed chat marker survived clear");

@@ -10,7 +10,8 @@ public final class ServerMenus {
     private static final Pattern GRIEF = Pattern.compile("(?iu)гриф\\s*#\\s*(\\d{1,2})(?!\\d)");
     private ServerMenus() {}
 
-    public record Item(String id, String name) {
+    public record Item(String id, String name, int count) {
+        public Item(String id,String name){this(id,name,id.equals("minecraft:air")||id.isEmpty()?0:1);}
         public Item { name = FpProtocol.normalize(name); }
         public boolean named(String expected) { return name.equals(FpProtocol.normalize(expected)); }
     }

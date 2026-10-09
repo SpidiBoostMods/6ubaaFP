@@ -40,6 +40,7 @@ public final class FpClient implements ClientModInitializer {
     private final Queue<Log> logs=new ConcurrentLinkedQueue<>();
     @Override public void onInitializeClient() {
         INSTANCE=this;client=MinecraftClient.getInstance();result=FpFiles.result(client.runDirectory.toPath());
+        FpHud.configure(client.runDirectory.toPath().resolve("config/6ubaafp-hud.properties"));
         ClientCommandRegistrationCallback.EVENT.register((dispatcher,access)->registerCommands(dispatcher));
         ClientTickEvents.END_CLIENT_TICK.register(c->pump());
         ClientLifecycleEvents.CLIENT_STOPPING.register(c->{stop("Клиент закрывается.");flush();io.shutdown();try{io.awaitTermination(3,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}});
@@ -66,7 +67,7 @@ public final class FpClient implements ClientModInitializer {
             }
             dispatcher.register(root);
     }
-    private void inventoryUsage(){message("/6ubaafp inv [none|full] minecraft:compass, Алмазный меч — укажи предметы.");}
+    private void inventoryUsage(){message("/6ubaafp inv [none|full [1, 3-5]] compass, Алмазный меч, obsidian(6) — все условия обязательны; Esc — остановить.");}
     private void setRestart(boolean enabled){
         try{net.spidiboost.sixubaafp.updates.RestartPolicy.set(client.runDirectory.toPath(),enabled);
             message("Автоперезапуск "+(enabled?"включён":"выключен")+" · загрузка обновлений остаётся включённой.");
@@ -87,16 +88,19 @@ public final class FpClient implements ClientModInitializer {
     private com.mojang.brigadier.builder.RequiredArgumentBuilder<FabricClientCommandSource,String> inventoryArgument(boolean all) {
         return ClientCommandManager.argument("предметы",StringArgumentType.greedyString()).suggests((context,builder)->{
             String input=builder.getRemaining();int comma=input.lastIndexOf(',');int offset=comma+1;
+            try{if(all)offset=Math.max(offset,InventoryRequest.split(input,true).itemOffset());}catch(IllegalArgumentException e){return builder.buildFuture();}
             while(offset<input.length()&&Character.isWhitespace(input.charAt(offset)))offset++;
-            var values=builder.createOffset(builder.getStart()+offset);String prefix=input.substring(offset).toLowerCase(Locale.ROOT);
-            Registries.ITEM.getIds().stream().map(Identifier::toString).filter(id->id.startsWith(prefix)).sorted().forEach(values::suggest);
+            var values=builder.createOffset(builder.getStart()+offset);String value=input.substring(offset).toLowerCase(Locale.ROOT);
+            int bracket=value.indexOf('(');String prefix=(bracket<0?value:value.substring(0,bracket)).strip(),suffix=bracket<0?"":value.substring(bracket);
+            Registries.ITEM.getIds().stream().map(Identifier::toString).filter(id->id.startsWith(prefix)||!prefix.contains(":")&&id.startsWith("minecraft:"+prefix)).sorted().forEach(id->values.suggest(id+suffix));
             if("алмазный меч".startsWith(prefix))values.suggest("Алмазный меч");return values.buildFuture();
         }).executes(ctx->{
             try {
-                InventoryQuery query=InventoryQuery.parse(StringArgumentType.getString(ctx,"предметы"));
+                var request=InventoryRequest.split(StringArgumentType.getString(ctx,"предметы"),all);
+                InventoryQuery query=InventoryQuery.parse(request.items(),id->Registries.ITEM.containsId(Identifier.of(id)));
                 for(var term:query.terms())if(term.registry()&&(!Registries.ITEM.containsId(Identifier.of(term.value()))||term.value().equals("minecraft:air")))
                     throw new IllegalArgumentException("Неизвестный или пустой предмет: "+term.value());
-                start(all,query);
+                start(all,query,request.route());
             }catch(IllegalArgumentException e){message(e.getMessage());return 0;}return 1;
         });
     }
@@ -121,6 +125,9 @@ public final class FpClient implements ClientModInitializer {
         start(all,null);
     }
     private void start(boolean all,InventoryQuery query) {
+        start(all,query,GriefSelection.from(1));
+    }
+    private void start(boolean all,InventoryQuery query,List<Integer> route) {
         if(fullActive()||scanActive()){message("Уже идёт проверка. /6ubaafp stop");return;}
         if(!ready()){message("Подключись к серверу и дождись загрузки мира.");return;}
         full=null;inventoryMode=query!=null;inventoryQuery=query;scan=null;inventory=null;lastHud=null;hudUntil=0;fpLedger=new FpRunLedger();runUnresolved.clear();
@@ -134,7 +141,7 @@ public final class FpClient implements ClientModInitializer {
             Path watchFile=result,watchRun=run;
             watcher=CompletableFuture.supplyAsync(()->{try{return ResultWatch.start(watchFile,watchRun);}catch(IOException e){log("RESULT WATCH ERROR "+e.getMessage());throw new CompletionException(e);}},io);
         }catch(Exception e){message("Не могу подготовить файл: "+e.getMessage());return;}
-        headline(inventoryMode?"ИНВЕНТАРИ":"ПРОВЕРКА FP",all?"Маршрут · 56 грифов":"Текущий гриф · TAB");
+        headline(inventoryMode?"ИНВЕНТАРИ":"ПРОВЕРКА FP",all?"Маршрут · "+route.size()+" грифов":"Текущий гриф · TAB");
         log("VERSION="+net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sixubaafp").orElseThrow().getMetadata().getVersion().getFriendlyString()+" MODE="+(inventoryMode?"INV ":"FP ")+(all?"FULL":"START")+" query="+query+" file="+result);
         if(!all){startScan(false);return;}
         full=new FullRun(new FullRun.Port(){
@@ -148,7 +155,7 @@ public final class FpClient implements ClientModInitializer {
             public boolean persist(List<String> lines){return save(lines);}
             public void status(String text){log("NAV "+text);notice=text;noticeUntil=now()+3000;}
             public void finished(boolean complete,String reason){finishedUi(complete,reason);log("FULL END complete="+complete+" reason="+reason);flush();open();}
-        },1500);
+        },1500,route);
         full.begin(now());
     }
     private boolean startScan(boolean fromFull) {
@@ -216,6 +223,8 @@ public final class FpClient implements ClientModInitializer {
     }
     private void send(String command){if(client.getNetworkHandler()==null||!client.getNetworkHandler().getConnection().isOpen())throw new IllegalStateException("Нет игрового соединения");client.getNetworkHandler().sendChatCommand(command);}
     public void stop(String reason){if(fullActive())full.stop(reason);else cancelScan(reason);}
+    public boolean escape(){if(inventoryMode&&(fullActive()||scanActive())){stop("Остановлено клавишей Esc.");return true;}return false;}
+    public boolean hudVisible(){return fullActive()||scanActive()||now()<hudUntil;}
     public String status(){return (fullActive()?"Гриф #"+full.grief()+": "+full.phaseLabel()+". ":"")+(inventoryMode?inventory==null?"Нет активной проверки.":inventory.status():scan==null?"Нет активной проверки.":scan.status());}
     public void pump(){
         if(pumping)return;pumping=true;
@@ -248,7 +257,7 @@ public final class FpClient implements ClientModInitializer {
         }
     }
     private void closeMenu(){if(client.player!=null&&client.player.currentScreenHandler!=client.player.playerScreenHandler){client.player.closeHandledScreen();menuSync=-1;}}
-    private static ServerMenus.Item item(ItemStack stack){return new ServerMenus.Item(Registries.ITEM.getId(stack.getItem()).toString(),stack.isEmpty()?"":stack.getName().getString());}
+    private static ServerMenus.Item item(ItemStack stack){return new ServerMenus.Item(Registries.ITEM.getId(stack.getItem()).toString(),stack.isEmpty()?"":stack.getName().getString(),stack.getCount());}
     private ServerMenus.Menu menu(){if(client.player==null||client.player.currentScreenHandler==client.player.playerScreenHandler||client.player.currentScreenHandler.syncId!=menuSync)return null;var list=new ArrayList<ServerMenus.Item>();for(var slot:client.player.currentScreenHandler.slots){if(slot.inventory==client.player.getInventory())break;list.add(item(slot.getStack()));}return new ServerMenus.Menu(menuSync,menuTitle,list);}
     public static List<ServerMenus.Item> inventoryItems(net.minecraft.screen.ScreenHandler handler,net.minecraft.entity.player.PlayerInventory viewer){
         var items=new ArrayList<ServerMenus.Item>();for(var slot:handler.slots)if(slot.inventory!=viewer)items.add(item(slot.getStack()));return List.copyOf(items);

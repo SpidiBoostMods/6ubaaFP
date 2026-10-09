@@ -30,7 +30,7 @@ public final class NativeProbe implements ClientModInitializer {
             switch(step){
                 case 0->{
                     if(c.player.age<60||c.getNetworkHandler().getPlayerListEntry("DRetry")==null)return;
-                    Files.writeString(game.resolve("native-results.txt"),"6ubaaFP 1.3.0 native protocol/UI checks\n");
+                    Files.writeString(game.resolve("native-results.txt"),"6ubaaFP 1.5.0 native protocol/UI checks\n");
                     require(ClientCommandManager.getActiveDispatcher().getRoot().getChild("6ubaa")==null,"removed alias");
                     command(c,"6ubaafp update off");require(!net.spidiboost.sixubaafp.updates.RestartPolicy.enabled(game),"off persisted");command(c,"6ubaafp update on");require(net.spidiboost.sixubaafp.updates.RestartPolicy.enabled(game),"on persisted");
                     pass(game,"only 6ubaafp registered; update on/off persists in native command dispatcher");
@@ -54,11 +54,22 @@ public final class NativeProbe implements ClientModInitializer {
                 case 2->{if(c.getNetworkHandler().getPlayerListEntry("ZHang")==null)return;command(c,"6ubaafp inv minecraft:compass");session=(Path)field("run");step=3;}
                 case 3->{
                     if(!scan().progress().target().equals("ZHang")||!guardReady())return;
-                    require(Files.readString(output).equals("AFound"),"incremental checkpoint");command(c,"6ubaafp stop");due=System.nanoTime()+8_000_000_000L;step=4;
+                    require(Files.readString(output).equals("AFound"),"incremental checkpoint");
+                    var chat=new net.minecraft.client.gui.screen.ChatScreen("");c.setScreen(chat);
+                    int sw=c.getWindow().getScaledWidth(),sh=c.getWindow().getScaledHeight();var before=FpHud.bounds(sw,sh);
+                    require(chat.mouseClicked(before.x()+8,before.y()+9,0),"actual ChatScreen press");
+                    require(chat.mouseDragged(28,29,0,20-before.x(),20-before.y()),"actual ChatScreen drag");
+                    require(chat.mouseReleased(28,29,0),"actual ChatScreen release");
+                    var after=FpHud.bounds(sw,sh);require(after.x()==20&&after.y()==20,"drag coordinates "+after);
+                    FpHud.configure(game.resolve("config/6ubaafp-hud.properties"));require(FpHud.bounds(sw,sh).equals(after),"saved HUD reload");
+                    ScreenshotRecorder.saveScreenshot(c.runDirectory,"fp-draggable-hud.png",c.getFramebuffer(),t->{});
+                    pass(game,"actual ChatScreen click/drag/release mixin, HUD config reload; AND counts and shorthand TAB native checks");
+                    c.keyboard.onKey(c.getWindow().getHandle(),org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE,0,org.lwjgl.glfw.GLFW.GLFW_PRESS,0);
+                    require(!scan().active(),"actual Keyboard Esc stops inventory");due=System.nanoTime()+8_000_000_000L;step=4;
                 }
                 case 4->{
                     if(!Files.exists(session.resolve("viewer-opened.txt"))){if(System.nanoTime()>due)throw new AssertionError("stop viewer");return;}
-                    require(!scan().active()&&Files.readString(output).equals("AFound"),"stop preserves");pass(game,"stop immediately preserves already checked nickname and invokes text viewer");
+                    require(!scan().active()&&Files.readString(output).equals("AFound"),"stop preserves");pass(game,"actual Esc immediately preserves already checked nickname and invokes text viewer");
                     if(!worldReady())return;
                     Path previous=session;command(c,"6ubaafp inv minecraft:compass");session=(Path)field("run");
                     require(!previous.equals(session)&&scan().active(),"fresh active scan must start before crash/kick");step=6;

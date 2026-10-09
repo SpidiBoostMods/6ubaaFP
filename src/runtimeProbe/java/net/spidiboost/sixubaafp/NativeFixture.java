@@ -58,7 +58,14 @@ public final class NativeFixture implements ModInitializer {
                 player.sendMessage(Text.literal("История "+nick+" (Лимит: 7): [CopyFull]"));
                 player.sendMessage(Text.literal("-- [2026-10-08 15:29] --"));
                 player.sendMessage(Text.literal(nick+" был забанен куратором QA"));
-                player.sendMessage(Text.literal("По причине: "+(nick.equals("Banned")?"Funpay":"Читы")+" [Горит]"));
+                player.sendMessage(Text.literal("По причине: "+(nick.equals("Banned")||nick.equals("Seed02")?"Funpay":"Читы")+" [Горит]"));
+                if(nick.equals("Banned")||nick.equals("Seed02"))player.sendMessage(Text.literal(nick+" was unbanned by Moderator."));
+                if(nick.equals("Banned")){
+                    player.sendMessage(Text.literal("-- [2026-10-08 15:28] --"));
+                    player.sendMessage(Text.literal(nick+" был забанен куратором QA"));
+                    player.sendMessage(Text.literal("По причине: Playerok"));
+                    player.sendMessage(Text.literal(nick+" was unbanned by ReallyWorld."));
+                }
                 if(nick.equals("Seed00")){delayedPlayer=player;delay=3;}
                 return 1;
             })));

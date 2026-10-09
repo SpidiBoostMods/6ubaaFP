@@ -48,9 +48,9 @@ public final class InventoryScan {
         }
         if((phase==Phase.OPEN||phase==Phase.CONTENT)&&!online()){skip(now,"left TAB");return;}
         if(phase==Phase.CONTENT&&contents!=null&&now-contentsAt>=5){
-            boolean match=contents.stream().anyMatch(query::matches);
+            boolean match=query.matches(contents);
             if(match)found.putIfAbsent(FpProtocol.key(target),target);
-            port.log("INV RESULT nick="+target+" sync="+sync+" slots="+contents.size()+" match="+match);
+            port.log("INV RESULT nick="+target+" sync="+sync+" slots="+contents.size()+" match="+match+" requirements="+query.describe(contents));
             if(!port.checkpoint(matches())){stop("Не удалось сохранить результат.");return;}
             port.notice(match?"match":"checked",target,attempts);
             done(now,attempts>1);return;

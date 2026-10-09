@@ -23,6 +23,7 @@ public final class FpScan {
     private static final Pattern HIST=Pattern.compile("^история(?: игрока)?\\s+([A-Za-z0-9_]{1,16})\\s*\\(лимит\\s*:\\s*(\\d+)\\)",FLAGS);
     private static final Pattern ENTRY=Pattern.compile("^([A-Za-z0-9_]{1,16})\\s+был\\s+(забанен|заткнут|предупрежден|предупреждён)(?:\\s|$)",FLAGS);
     private static final Pattern REASON=Pattern.compile("^(?:по причине|причина|reason)\\s*:\\s*(.*)",FLAGS);
+    private static final Pattern UNBAN=Pattern.compile("^([A-Za-z0-9_]{1,16})\\s+was\\s+unbanned\\s+by\\s+(.+?)\\s*$",FLAGS);
     private static final Pattern BODY=Pattern.compile("^[A-Za-z0-9_]{1,16}(?:\\s*\\[[CH]])*(?:\\s*,\\s*[A-Za-z0-9_]{1,16}(?:\\s*\\[[CH]])*)*\\s*,?\\s*$",FLAGS);
     private final Port port; private final LongSupplier clock; private final Thread thread=Thread.currentThread();
     private FpRunLedger ledger;private final boolean sharedLedger;
@@ -39,6 +40,7 @@ public final class FpScan {
     // Header-only queries advance immediately. Retain their owners so a delayed
     // body can still be parsed while the next query is waiting for its response.
     private final Map<String,LateHistory> lateHistories=new HashMap<>();
+    private final Map<String,HistoryEvidence> evidence=new HashMap<>();
     private String lateWire;
     private long tailUntil;
     private static final class LateHistory {
@@ -68,7 +70,7 @@ public final class FpScan {
     public void start(Collection<String> names,boolean onlyLocal) {
         own(); if(active()) throw new IllegalStateException("scan already active");
         if(!sharedLedger)ledger=new FpRunLedger();redNames.clear();twins.clear();group.clear();
-        this.onlyLocal=onlyLocal; players.clear();histories.clear();visited.clear();matches.clear();unresolved.clear();lateHistories.clear();lateWire=null;tailUntil=0;dupeCount=historyCount=0;
+        this.onlyLocal=onlyLocal; players.clear();histories.clear();visited.clear();matches.clear();unresolved.clear();lateHistories.clear();evidence.clear();lateWire=null;tailUntil=0;dupeCount=historyCount=0;
         LinkedHashMap<String,String> unique=new LinkedHashMap<>();for(String name:names)if(FpProtocol.valid(name))unique.putIfAbsent(FpProtocol.key(name),name);
         players.addAll(unique.values()); nextSendAt=Math.max(clock.getAsLong(),lastSent+COMMAND_GAP_MS);target=null;phase=Phase.DUPE;attempts=0;
         port.log("START tab="+players.size()+" localTabOnly="+onlyLocal+" palette=yellow/gold/red/dark-red commandGapMs="+COMMAND_GAP_MS);tick();
@@ -107,13 +109,17 @@ public final class FpScan {
                 var h=HIST.matcher(text);if(h.find()){if(h.group(1).equalsIgnoreCase(target)){header=true;expected=Math.min(10000,Integer.parseInt(h.group(2)));lastRelevant=clock.getAsLong();}continue;}
                 if(lower.matches("^(?:у .+ )?(?:нет|не найдено) (?:истории|записей|наказаний).*")||lower.startsWith("no history")) {lastRelevant=clock.getAsLong();doneTarget("empty history");continue;}
                 if(!header)continue;
+                var unban=UNBAN.matcher(text);
+                if(unban.matches()&&unban.group(1).equalsIgnoreCase(target)){
+                    history(target).unban(unban.group(2));syncEvidence(target);recordComplete=recordCount>0&&reasonSeen;banEntry=reasonOpen=false;lastRelevant=clock.getAsLong();continue;
+                }
                 if(lower.matches("^[a-z0-9_]{1,16} was (?:unbanned|unmuted) by .+")) {
                     if(!lower.startsWith(FpProtocol.key(target)+" was "))continue;
                     finishEntry();recordComplete=recordCount>0&&reasonSeen;banEntry=reasonOpen=false;lastRelevant=clock.getAsLong();continue;
                 }
                 var e=ENTRY.matcher(text);
-                if(e.find()) {historyStarted=true;finishEntry();banEntry=e.group(1).equalsIgnoreCase(target)&&e.group(2).equalsIgnoreCase("забанен");if(e.group(1).equalsIgnoreCase(target))recordCount++;reason="";recordComplete=reasonSeen=reasonOpen=false;lastRelevant=clock.getAsLong();continue;}
-                if(text.matches("^[-—–]+\\s*\\[\\d{4}-.*")){historyStarted=true;finishEntry();recordComplete=banEntry=false;lastRelevant=clock.getAsLong();continue;}
+                if(e.find()) {historyStarted=true;finishEntry();banEntry=e.group(1).equalsIgnoreCase(target)&&e.group(2).equalsIgnoreCase("забанен");if(e.group(1).equalsIgnoreCase(target)){recordCount++;history(target).begin(banEntry);}else history(target).boundary();reason="";recordComplete=reasonSeen=reasonOpen=false;lastRelevant=clock.getAsLong();continue;}
+                if(text.matches("^[-—–]+\\s*\\[\\d{4}-.*")){historyStarted=true;finishEntry();history(target).boundary();recordComplete=banEntry=false;lastRelevant=clock.getAsLong();continue;}
                 var r=REASON.matcher(text);if(r.find()) {historyStarted=true;reason=r.group(1);reasonSeen=true;reasonOpen=!terminalStatus(text);recordComplete=recordCount>0&&!reasonOpen;lastRelevant=clock.getAsLong();finishEntry();continue;}
                 if(lower.startsWith("окончание")){finishEntry();recordComplete=recordCount>0&&reasonSeen;banEntry=false;lastRelevant=clock.getAsLong();continue;}
                 // True packet-wrapped reasons can continue; normal broadcasts do not.
@@ -137,6 +143,13 @@ public final class FpScan {
             return false;
         }
         var entry=ENTRY.matcher(text);
+        var unban=UNBAN.matcher(text);
+        if(unban.matches()){
+            String key=FpProtocol.key(unban.group(1));
+            if(phase==Phase.HIST&&unban.group(1).equalsIgnoreCase(target)){lateWire=null;return false;}
+            if(lateHistories.containsKey(key)){lateWire=key;history(unban.group(1)).unban(unban.group(2));syncEvidence(unban.group(1));tailUntil=clock.getAsLong()+FINAL_TAIL_MS;port.log("LATE UNBAN nick="+unban.group(1)+" author="+unban.group(2));return true;}
+            return false;
+        }
         if(entry.find()) {
             String key=FpProtocol.key(entry.group(1));
             if(phase==Phase.HIST&&entry.group(1).equalsIgnoreCase(target)){lateWire=null;return false;}
@@ -146,8 +159,8 @@ public final class FpScan {
         LateHistory late=lateWire==null?null:lateHistories.get(lateWire);
         if(late==null)return false;
         boolean relevant=true;
-        if(entry.find(0)) {late.started=true;late.ban=entry.group(2).equalsIgnoreCase("забанен");late.seen=late.open=false;late.reason="";}
-        else if(text.matches("^[-—–]+\\s*\\[\\d{4}-.*")){late.ban=false;late.open=false;}
+        if(entry.find(0)) {late.started=true;late.ban=entry.group(2).equalsIgnoreCase("забанен");history(late.nick).begin(late.ban);late.seen=late.open=false;late.reason="";}
+        else if(text.matches("^[-—–]+\\s*\\[\\d{4}-.*")){history(late.nick).boundary();late.ban=false;late.open=false;}
         else if(lower.startsWith(FpProtocol.key(late.nick)+" was ")&&lower.matches(".* was (?:unbanned|unmuted) by .+")){late.ban=late.open=false;}
         else if(lower.startsWith("окончание")){late.ban=late.open=false;}
         else {
@@ -158,16 +171,17 @@ public final class FpScan {
         }
         if(!relevant)return false;
         tailUntil=clock.getAsLong()+FINAL_TAIL_MS;
-        if(late.ban&&late.seen&&FpProtocol.market(late.reason)) {
-            if(!self(late.nick)){ledger.findings.putIfAbsent(FpProtocol.key(late.nick),late.nick);if(matches.putIfAbsent(FpProtocol.key(late.nick),late.nick)==null)port.log("LATE MATCH nick="+late.nick+" reason="+late.reason);}
-        }
+        if(late.ban&&late.seen){history(late.nick).reason(late.reason);syncEvidence(late.nick);}
         port.log("LATE HISTORY nick="+late.nick+" text="+text);
         return true;
     }
     private void finishEntry() {
-        if(banEntry&&reasonSeen&&FpProtocol.market(reason)&&!self(target)) {
-            ledger.findings.putIfAbsent(FpProtocol.key(target),target);matches.putIfAbsent(FpProtocol.key(target),target);port.log("MATCH nick="+target+" reason="+reason);
-        }
+        if(banEntry&&reasonSeen){history(target).reason(reason);syncEvidence(target);}
+    }
+    private HistoryEvidence history(String nick){return evidence.computeIfAbsent(FpProtocol.key(nick),k->new HistoryEvidence());}
+    private void syncEvidence(String nick){String key=FpProtocol.key(nick);boolean valid=history(nick).matches()&&!self(nick);
+        if(valid){ledger.findings.putIfAbsent(key,nick);if(matches.putIfAbsent(key,nick)==null)port.log("MATCH nick="+nick+" evidence=eligible FP ban");}
+        else {ledger.findings.remove(key);if(matches.remove(key)!=null)port.log("RETRACT MATCH nick="+nick+" evidence=manual unban");}
     }
     private Map<String,String> local() {Map<String,String> result=new HashMap<>();for(String n:port.online())if(FpProtocol.valid(n))result.put(FpProtocol.key(n),n);return result;}
     private void resetResponse() {header=body=dupeComplete=recordComplete=historyStarted=banEntry=reasonSeen=reasonOpen=false;dupeNames.clear();group.clear();reason="";recordCount=expected=0;}

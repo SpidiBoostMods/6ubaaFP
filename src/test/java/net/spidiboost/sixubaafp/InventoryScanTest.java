@@ -12,7 +12,7 @@ class InventoryScanTest {
         long time;int finished;boolean writable=true,sendBroken;List<String> online=new ArrayList<>(List.of("A","B","C"));
         List<String> sent=new ArrayList<>(),logs=new ArrayList<>();List<Integer> closed=new ArrayList<>();
         List<String> saved=List.of();FpScan.Result result;
-        InventoryScan scan=new InventoryScan(this,()->time,InventoryQuery.parse("minecraft:compass, Алмазный меч"));
+        InventoryScan scan=new InventoryScan(this,()->time,InventoryQuery.parse("minecraft:compass"));
         public void send(String c){if(sendBroken)throw new IllegalStateException("disconnected while sending");sent.add(c);}public Collection<String> online(){return online;}
         public void close(int sync){closed.add(sync);scan.closed(sync);} // Exercise synchronous close callback too.
         public boolean checkpoint(List<String> names){saved=List.copyOf(names);return writable;}
@@ -21,10 +21,11 @@ class InventoryScanTest {
         void tick(long ms){time+=ms;scan.tick();}
         void menu(int sync,List<ServerMenus.Item> items){scan.opened(sync,"Player");scan.contents(sync,items);tick(5);}
     }
-    @Test void registryOrExactRenamedDisplayNameCommaUnicodeFormattingAndCase(){
+    @Test void registryAndExactRenamedDisplayNameCommaUnicodeFormattingAndCase(){
         var q=InventoryQuery.parse(" Minecraft:Compass, §bАлмазный  МЕЧ , minecraft:compass ");
-        assertEquals(2,q.terms().size());assertTrue(q.matches(item("minecraft:compass","Anything")));
-        assertTrue(q.matches(item("minecraft:stick","§6Алмазный меч")));
+        assertEquals(2,q.terms().size());assertFalse(q.matches(item("minecraft:compass","Anything")));
+        assertFalse(q.matches(item("minecraft:stick","§6Алмазный меч")));
+        assertTrue(q.matches(List.of(item("minecraft:compass","Anything"),item("minecraft:stick","§6Алмазный меч"))));
         assertFalse(q.matches(item("minecraft:diamond_sword","Алмазный меч героя")));
         assertFalse(q.matches(item("minecraft:air","Алмазный меч")));
         assertFalse(q.matches(item("minecraft:recovery_compass","Custom Compass")));
@@ -35,7 +36,7 @@ class InventoryScanTest {
         h.menu(1,MATCH);assertEquals(List.of("A"),h.saved);assertEquals(1,h.sent.size());
         h.tick(4);assertEquals(1,h.sent.size());h.tick(1);assertEquals("invsee B",h.sent.getLast());
         h.menu(2,EMPTY);h.tick(5);assertEquals("invsee C",h.sent.getLast());
-        h.menu(3,List.of(item("minecraft:stick","Алмазный меч")));h.tick(5);
+        h.menu(3,List.of(item("minecraft:compass","Алмазный меч")));h.tick(5);
         assertEquals(List.of("A","C"),h.result.names());assertTrue(h.result.complete());
         assertEquals(List.of(1,2,3),h.closed);assertEquals(1,h.finished);
     }

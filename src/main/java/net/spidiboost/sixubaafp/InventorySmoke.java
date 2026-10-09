@@ -28,13 +28,19 @@ final class InventorySmoke {
         for(String root:List.of("6ubaafp"))for(String sub:List.of("start","full","stop","status","open","update"))
             require(dispatcher.getRoot().getChild(root).getChild(sub)!=null,"legacy command preserved");
         for(String setting:List.of("on","off"))require(!dispatcher.parse("6ubaafp update "+setting,null).getReader().canRead(),"update setting parse");
+        for(String command:List.of("6ubaafp inv comp","6ubaafp invsee full 1, 4, 2-5 comp","6ubaafp inv compass,obsid")){
+            var completions=dispatcher.getCompletionSuggestions(dispatcher.parse(command,null)).join().getList();
+            String expected=command.endsWith("obsid")?"minecraft:obsidian":"minecraft:compass";
+            require(completions.stream().anyMatch(s->s.getText().equals(expected)),"native shorthand suggestion: "+command);
+            require(completions.stream().filter(s->s.getText().equals(expected)).allMatch(s->s.apply(command).endsWith(expected)),"suggestion range preserves route and previous terms");
+        }
         var ordinary=Text.literal("Чужой чат 🗝").withColor(0x123456).asOrderedText();require(FpTheme.animate(ordinary)==ordinary,"foreign text unchanged");
         require(FpTheme.message("Юникод 🗝").getString().equals("[6ubaaFP]  Юникод 🗝"),"gradient Unicode unchanged");
         require(net.fabricmc.loader.api.FabricLoader.getInstance().getObjectShare().get("spidiboost:update-save-sixubaafp") instanceof Runnable,"updater preservation hook");
         long[] fpTime={0};var fpRequests=new ArrayList<String>();var fpResults=new ArrayList<FpScan.Result>();
         var fp=new FpScan(new FpScan.Port(){
             public void send(String command){fpRequests.add(command);}
-            public Collection<String> online(){throw new AssertionError("FP may not filter dupeip accounts by TAB");}
+            public Collection<String> online(){return List.of("Owner");}
             public void log(String value){}public void finish(FpScan.Result r){fpResults.add(r);}
         },()->fpTime[0]);
         fp.start(List.of("Owner"),false);
@@ -54,7 +60,11 @@ final class InventorySmoke {
         var packet=new InventoryS2CPacket(42,1,stacks,ItemStack.EMPTY);
         handler.updateSlotStacks(packet.getRevision(),packet.getContents(),packet.getCursorStack());
         var extracted=FpClient.inventoryItems(handler,viewer);
-        require(query.matches(extracted.get(0))&&query.matches(extracted.get(35)),"native registry and anvil custom name on last server slot");
+        require(query.matches(extracted)&&!query.matches(extracted.get(0))&&!query.matches(extracted.get(35)),"native AND: registry and anvil custom name on last server slot");
+        handler.getInventory().setStack(1,new ItemStack(Items.OBSIDIAN,2));handler.getInventory().setStack(2,new ItemStack(Items.OBSIDIAN,4));
+        var counted=InventoryQuery.parse("compass, Алмазный меч,obsidian(6)",id->net.minecraft.registry.Registries.ITEM.containsId(net.minecraft.util.Identifier.of(id)));
+        require(counted.matches(FpClient.inventoryItems(handler,viewer)),"native ItemStack counts aggregate to exactly six");
+        handler.getInventory().setStack(2,new ItemStack(Items.OBSIDIAN,5));require(!counted.matches(FpClient.inventoryItems(handler,viewer)),"native rejects seven against exact six");
         long[] time={0};var requests=new ArrayList<String>();var outcomes=new ArrayList<FpScan.Result>();
         var scanner=new InventoryScan(new InventoryScan.Port(){
             public void send(String c){requests.add(c);}public Collection<String> online(){return List.of("NativeA","NativeB","NativeC");}
@@ -66,7 +76,7 @@ final class InventorySmoke {
         handler.getInventory().clear();scanner.opened(43,"Player");scanner.contents(43,FpClient.inventoryItems(handler,viewer));time[0]+=5;scanner.tick();time[0]+=5;scanner.tick();
         handler.getInventory().setStack(35,renamed);scanner.opened(44,"Player");scanner.contents(44,FpClient.inventoryItems(handler,viewer));time[0]+=5;scanner.tick();time[0]+=5;scanner.tick();
         require(requests.equals(List.of("invsee NativeA","invsee NativeB","invsee NativeC")),"native serial queue");
-        require(outcomes.size()==1&&outcomes.getFirst().names().equals(List.of("NativeA","NativeC")),"native empty container no false match");
+        require(outcomes.size()==1&&outcomes.getFirst().names().equals(List.of("NativeA")),"native AND excludes partial requirements and empty container");
         handler.getInventory().setStack(0,new ItemStack(Items.COMPASS));
         return new Preview(new GenericContainerScreen(handler,viewer,Text.literal("Player")));
     }
