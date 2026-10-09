@@ -17,7 +17,9 @@ class ResultGuardTest {
         Path file=dir.resolve("6ubaafp-inv.txt"),receipt=dir.resolve("receipt.txt");FpFiles.write(file,java.util.List.of("VerifiedA VerifiedB - grief #3"));
         Path source=dir.resolve("Wait.java");Files.writeString(source,"public class Wait { public static void main(String[] a)throws Exception {System.out.println(\"LIVE\");System.out.flush();System.in.read();}}",StandardCharsets.UTF_8);
         Path java=Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name").startsWith("Windows")?"java.exe":"java");
-        assertEquals(0,new ProcessBuilder(java.resolveSibling(System.getProperty("os.name").startsWith("Windows")?"javac.exe":"javac").toString(),"-d",dir.toString(),source.toString()).inheritIO().start().waitFor());
+        // Keep the fixture's Unicode working directory and result paths, but do
+        // not send Unicode through the Windows javac native argument codepage.
+        assertEquals(0,new ProcessBuilder(java.resolveSibling(System.getProperty("os.name").startsWith("Windows")?"javac.exe":"javac").toString(),"-d",".",source.getFileName().toString()).directory(dir.toFile()).inheritIO().start().waitFor());
         Process parent=new ProcessBuilder(java.toString(),"-cp",".","Wait").directory(dir.toFile()).start();assertEquals("LIVE",new BufferedReader(new InputStreamReader(parent.getInputStream())).readLine());
         Files.copy(Path.of("build/shared-agent/sixubaafp-shared-update-agent.jar"),dir.resolve("guard.jar"));
         Process guard=new ProcessBuilder(java.toString(),"-Dsixubaafp.guard.dryRun=true","-cp","guard.jar","net.spidiboost.sixubaafp.guard.ResultGuard").directory(dir.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
