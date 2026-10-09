@@ -13,8 +13,8 @@ public abstract class NetworkMixin {
     @Inject(method="onGameMessage",at=@At("HEAD"))
     private void fp$message(GameMessageS2CPacket p,CallbackInfo ci){if(MinecraftClient.getInstance().isOnThread()&&FpClient.INSTANCE!=null)FpClient.INSTANCE.message(p.content(),p.overlay());}
     @Inject(method="onOpenScreen",at=@At("TAIL")) private void fp$open(OpenScreenS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.opened(p.getSyncId(),p.getName().getString());}
-    @Inject(method="onInventory",at=@At("TAIL")) private void fp$items(InventoryS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.contents();}
-    @Inject(method="onScreenHandlerSlotUpdate",at=@At("TAIL")) private void fp$slot(ScreenHandlerSlotUpdateS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.contents();}
+    @Inject(method="onInventory",at=@At("TAIL")) private void fp$items(InventoryS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.contents(p.getSyncId(),true);}
+    @Inject(method="onScreenHandlerSlotUpdate",at=@At("TAIL")) private void fp$slot(ScreenHandlerSlotUpdateS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.contents(p.getSyncId(),false);}
     @Inject(method="onCloseScreen",at=@At("TAIL")) private void fp$close(CloseScreenS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.closed(p.getSyncId());}
     @Inject(method="onGameJoin",at=@At("TAIL")) private void fp$join(GameJoinS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.worldChanged();}
     @Inject(method="onPlayerRespawn",at=@At("TAIL")) private void fp$respawn(PlayerRespawnS2CPacket p,CallbackInfo ci){FpClient.INSTANCE.worldChanged();}

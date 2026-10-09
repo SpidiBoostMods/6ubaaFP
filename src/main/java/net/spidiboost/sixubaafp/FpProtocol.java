@@ -48,6 +48,10 @@ public final class FpProtocol {
             for(int i=begin;i<end;i++) if(!yellow(colors[i])) return false;
             return end>begin;
         }
+        public boolean eligibleName(int begin,int end) {
+            for(int i=begin;i<end;i++) if(!yellow(colors[i])&&!red(colors[i])) return false;
+            return end>begin;
+        }
     }
     public static boolean yellow(int color) {
         if(color<0) return false;
@@ -61,6 +65,14 @@ public final class FpProtocol {
     public static String normalize(String text) {
         return Line.plain(text).clean().text().toLowerCase(Locale.ROOT).replace('ё','е')
                 .replaceAll("[\\p{Cf}]","").replaceAll("(?U)[\\s\\p{Z}]+"," ").strip();
+    }
+    public static boolean red(int color) {
+        if(color<0)return false;
+        double r=(color>>16&255)/255d,g=(color>>8&255)/255d,b=(color&255)/255d;
+        double max=Math.max(r,Math.max(g,b)),min=Math.min(r,Math.min(g,b)),delta=max-min;
+        if(max<.35||delta<.4*max||max!=r)return false;
+        double hue=60*(g-b)/delta;if(hue<0)hue+=360;
+        return hue<=15||hue>=345;
     }
     public static boolean market(String reason) {
         String value=normalize(reason).replaceAll("(?U)[\\s\\p{P}]+","");

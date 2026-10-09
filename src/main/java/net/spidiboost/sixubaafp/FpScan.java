@@ -50,7 +50,7 @@ public final class FpScan {
         this.onlyLocal=onlyLocal; players.clear();histories.clear();visited.clear();matches.clear();unresolved.clear();lateHistories.clear();lateWire=null;tailUntil=0;dupeCount=historyCount=0;
         LinkedHashMap<String,String> unique=new LinkedHashMap<>();for(String name:names)if(FpProtocol.valid(name))unique.putIfAbsent(FpProtocol.key(name),name);
         players.addAll(unique.values()); nextSendAt=Math.max(clock.getAsLong(),lastSent+COMMAND_GAP_MS);target=null;phase=Phase.DUPE;attempts=0;
-        port.log("START tab="+players.size()+" localYellowOnly="+onlyLocal+" commandGapMs="+COMMAND_GAP_MS);tick();
+        port.log("START tab="+players.size()+" localTabOnly="+onlyLocal+" palette=yellow/gold/red/dark-red commandGapMs="+COMMAND_GAP_MS);tick();
     }
     public void accept(FpProtocol.Line packet) {
         own();if(!active())return;
@@ -74,9 +74,9 @@ public final class FpScan {
                 body=true;dupeComplete=!text.stripTrailing().endsWith(",");lastRelevant=clock.getAsLong();var nick=FpProtocol.NICK.matcher(text);
                 while(nick.find()) {
                     if(nick.start()>0 && text.charAt(nick.start()-1)=='[')continue;
-                    boolean yellow=line.yellowName(nick.start(),nick.end());
-                    port.log("DUPE NAME nick="+nick.group(1)+" yellow="+yellow);
-                    if(yellow)dupeNames.putIfAbsent(FpProtocol.key(nick.group(1)),nick.group(1));
+                    boolean eligible=line.eligibleName(nick.start(),nick.end());
+                    port.log("DUPE NAME nick="+nick.group(1)+" eligible-yellow-red="+eligible);
+                    if(eligible)dupeNames.putIfAbsent(FpProtocol.key(nick.group(1)),nick.group(1));
                 }
             } else {
                 var h=HIST.matcher(text);if(h.find()){if(h.group(1).equalsIgnoreCase(target)){header=true;expected=Math.min(10000,Integer.parseInt(h.group(2)));lastRelevant=clock.getAsLong();}continue;}
@@ -154,7 +154,7 @@ public final class FpScan {
     private void doneTarget(String why) {
         port.log("END phase="+phase+" nick="+target+" reason="+why+" records="+recordCount+" expected="+expected+" elapsedMs="+(clock.getAsLong()-lastSent));
         if(phase==Phase.DUPE) {
-            dupeCount++;Map<String,String> tab=local();
+            dupeCount++;Map<String,String> tab=onlyLocal?local():Map.of();
             for(var n:dupeNames.entrySet())if((!onlyLocal||tab.containsKey(n.getKey()))&&visited.add(n.getKey()))histories.add(tab.getOrDefault(n.getKey(),n.getValue()));
             phase=histories.isEmpty()?Phase.DUPE:Phase.HIST;
         } else {finishEntry();historyCount++;if(histories.isEmpty())phase=Phase.DUPE;}

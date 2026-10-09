@@ -286,6 +286,29 @@ class FullRunTest {
         }
     }
 
+    @Test void inventoryCheckpointsPersistCurrentGriefBeforeStopAndOnlyNonemptyAscendingRows(){
+        var probe=new Probe();var full=new FullRun(probe,1500);full.begin(0);long now=1;
+        for(int grief=1;grief<=56;grief++){
+            routeToSelection(full,grief,now);full.tick(view(false,null,grief*2L,grief),now+1);full.tick(view(false,null,grief*2L,grief),now+1600);
+            List<String> names=grief%7==0?List.of("Nick"+grief):List.of();
+            assertTrue(full.checkpoint(names));
+            if(!names.isEmpty())assertEquals("Nick"+grief+" - grief #"+grief,probe.persisted.getLast());
+            full.scanFinished(true,names,"inventory",now+1601);now+=2400;
+        }
+        assertEquals(8,probe.persisted.size());assertEquals("Nick7 - grief #7",probe.persisted.getFirst());assertEquals("Nick56 - grief #56",probe.persisted.getLast());
+        assertFalse(full.active());assertFalse(full.checkpoint(List.of("Late")));
+    }
+
+    @Test void inventoryCheckpointContainsCompletedPlusVerifiedPartialAndSurvivesDisconnect(){
+        var probe=new Probe();var full=new FullRun(probe,1500);full.begin(0);
+        routeToSelection(full,1,1);full.tick(view(false,null,1,1),2);full.tick(view(false,null,1,1),1601);
+        full.scanFinished(true,List.of("A"),"done",1602);
+        routeToSelection(full,2,2400);full.tick(view(false,null,2,2),2401);full.tick(view(false,null,2,2),4000);
+        probe.currentMatches=List.of("B","C");assertTrue(full.checkpoint(probe.currentMatches));
+        assertEquals(List.of("A - grief #1","B C - grief #2"),probe.persisted);
+        full.stop("disconnect");assertEquals(List.of("A - grief #1","B C - grief #2"),probe.persisted);
+    }
+
     private static void routeToSelection(FullRun full, int grief, long now) {
         full.tick(view(true, null, 0, 1), now);
         full.tick(view(true, null, 0, 1), now);

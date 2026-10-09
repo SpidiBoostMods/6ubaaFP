@@ -332,6 +332,15 @@ public final class FullRun {
                 + (written ? "" : " Ошибка записи файла."));
     }
 
+    /** Crash-resilient interim file: completed griefs and verified current-player matches only. */
+    public boolean checkpoint(List<String> matches) {
+        if(phase!=Phase.SCANNING)return false;
+        var current=new LinkedHashSet<>(partial);current.addAll(matches);
+        var saved=new ArrayList<>(lines);
+        if(!current.isEmpty())saved.add(format(grief,List.copyOf(current)));
+        return port.persist(saved);
+    }
+
     private void finish(boolean complete, String reason) {
         phase = Phase.FINISHED;
         cancelOnce();
@@ -352,7 +361,7 @@ public final class FullRun {
             case WAIT_PAGE2 -> "вторая страница";
             case WAIT_TRANSFER -> "подключение к грифу";
             case WAIT_TAB -> "ожидание загрузки таба";
-            case SCANNING -> "проверка FP";
+            case SCANNING -> "проверка игроков";
             case RETRY_SCAN -> "повтор проверки на текущем грифе";
             case FINISHED -> "завершено";
         };
