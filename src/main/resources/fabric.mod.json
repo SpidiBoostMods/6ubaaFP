@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "sixubaafp",
+  "version": "${version}",
+  "name": "spidiboost.6ubaaFP",
+  "description": "Online dupeip accounts and FP/Funpay/Playerok ban history scanner.",
+  "authors": [
+    "SpidiBoost"
+  ],
+  "license": "All Rights Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.spidiboost.sixubaafp.FpClient",
+      "net.spidiboost.sixubaafp.updates.SharedBootstrap"
+    ]
+  },
+  "mixins": [
+    "sixubaafp.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "minecraft": "1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "contact": {
+    "homepage": "https://github.com/SpidiBoostMods/6ubaaFP",
+    "sources": "https://github.com/SpidiBoostMods/6ubaaFP",
+    "issues": "https://github.com/SpidiBoostMods/6ubaaFP/issues"
+  },
+  "icon": "assets/sixubaafp/icon.png"
+}

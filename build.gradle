@@ -1,0 +1,24 @@
+plugins { id 'fabric-loom' version '1.9.2' }
+version = project.mod_version
+group = 'net.spidiboost.sixubaafp'
+base { archivesName = '6ubaaFP-1.21.4' }
+repositories { mavenCentral() }
+dependencies {
+    minecraft 'com.mojang:minecraft:1.21.4'
+    mappings 'net.fabricmc:yarn:1.21.4+build.8:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.119.4+1.21.4'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+java { toolchain.languageVersion = JavaLanguageVersion.of(21); withSourcesJar() }
+tasks.withType(JavaCompile).configureEach { options.release = 21; options.encoding = 'UTF-8' }
+tasks.withType(JavaExec).configureEach { javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) } }
+test { useJUnitPlatform(); javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) } }
+processResources { inputs.property 'version', project.version; filesMatching('fabric.mod.json') { expand 'version': project.version } }
+if (project.hasProperty('fpSmoke')) {
+    loom.runs.client { runDir 'build/fp-smoke'; vmArg '-Dsixubaafp.smoke=true' }
+    tasks.named('runClient', JavaExec) { if (System.getProperty('os.name').startsWith('Mac')) jvmArgs '-XstartOnFirstThread' }
+}
+
+apply from: 'shared-updater.gradle'

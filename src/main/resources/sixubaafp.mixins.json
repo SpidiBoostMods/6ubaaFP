@@ -1,0 +1,1 @@
+{"required":true,"package":"net.spidiboost.sixubaafp.mixin","compatibilityLevel":"JAVA_21","client":["NetworkMixin","MinecraftMixin"],"injectors":{"defaultRequire":1}}
