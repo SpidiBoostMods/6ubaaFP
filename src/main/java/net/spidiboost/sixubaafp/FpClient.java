@@ -71,7 +71,7 @@ public final class FpClient implements ClientModInitializer {
     private void setRestart(boolean enabled){
         try{net.spidiboost.sixubaafp.updates.RestartPolicy.set(client.runDirectory.toPath(),enabled);
             message("Автоперезапуск "+(enabled?"включён":"выключен")+" · загрузка обновлений остаётся включённой.");
-            net.spidiboost.sixubaafp.updates.SharedUpdater.preferenceChanged();updateStatus();
+            net.spidiboost.sixubaafp.updates.SharedUpdater.preferenceChanged();
         }catch(Exception e){message("Ошибка сохранения настройки обновления: "+e.getMessage());}
     }
     private void updateStatus(){net.spidiboost.sixubaafp.updates.SharedUpdater.requestCheck();showUpdate();updateRequested=true;nextUpdate=now()+250;}
@@ -83,7 +83,8 @@ public final class FpClient implements ClientModInitializer {
         String remote=latest.isBlank()?(availability.equals("checking")?"проверяем":"нет данных"):latest;
         String text="Обновления · установлена "+current+" · GitHub "+remote+" · автоперезапуск "+(enabled?"ВКЛ":"ВЫКЛ");
         String detail=state.getOrDefault("status","Проверяем доступность GitHub…");
-        lastUpdate=state.toString()+enabled;message(text);message(detail);
+        lastUpdate=state.toString()+enabled;message(text);
+        if(!availability.equals("current"))message(detail);
     }
     private com.mojang.brigadier.builder.RequiredArgumentBuilder<FabricClientCommandSource,String> inventoryArgument(boolean all) {
         return ClientCommandManager.argument("предметы",StringArgumentType.greedyString()).suggests((context,builder)->{

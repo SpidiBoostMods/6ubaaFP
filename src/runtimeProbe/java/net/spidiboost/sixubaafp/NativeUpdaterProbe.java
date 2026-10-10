@@ -21,6 +21,34 @@ public final class NativeUpdaterProbe {
     private void behavior(Path policyGame)throws Exception{var method=SharedUpdater.class.getDeclaredMethod("readyBehavior",Path.class);method.setAccessible(true);method.invoke(updater,policyGame);}
     private static void jar(Path path,String value)throws Exception{try(var zip=new ZipOutputStream(Files.newOutputStream(path))){zip.putNextEntry(new ZipEntry("payload.txt"));zip.write(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));zip.closeEntry();}}
     @SuppressWarnings("unchecked") private static List<ChatHudLine> messages(MinecraftClient client)throws Exception{var f=client.inGameHud.getChatHud().getClass().getDeclaredField("messages");f.setAccessible(true);return (List<ChatHudLine>)f.get(client.inGameHud.getChatHud());}
+    private void quietChecks(MinecraftClient client)throws Exception {
+        int before=messages(client).size();var screen=client.currentScreen;
+        var fetcher=Class.forName(SharedUpdater.class.getName()+"$Fetcher");var mod=ModCatalog.ALL.get(2);
+        int[] calls={0},phase={0};
+        Object http=Proxy.newProxyInstance(fetcher.getClassLoader(),new Class[]{fetcher},(o,m,a)->{
+            require(a[0].equals(mod.latest()),"discovery must not download a JAR");calls[0]++;
+            if(phase[0]==0)throw new IOException("QA offline");
+            String version=phase[0]==1?"1.5.2":"1.5.3";
+            return ("version="+version+"\nminecraft=1.21.4\nartifact="+mod.artifact(version)+"\nsha256="+"a".repeat(64)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        });
+        var constructor=SharedUpdater.class.getDeclaredConstructor(fetcher);constructor.setAccessible(true);Object quiet=constructor.newInstance(http);
+        var installed=Class.forName(SharedUpdater.class.getName()+"$Installed");var ctor=installed.getDeclaredConstructors()[0];ctor.setAccessible(true);
+        Path root=client.runDirectory.toPath().resolve("quiet-updater-QA");
+        Object entry=ctor.newInstance(mod,"1.5.2",root.resolve("mods/6ubaaFP-1.21.4-1.5.2.jar"));
+        var inspect=SharedUpdater.class.getDeclaredMethod("prepare",installed,Path.class,Path.class,boolean.class);inspect.setAccessible(true);
+        require(inspect.invoke(quiet,entry,root,root.resolve(".spidiboost-updates"),true)==null,"failed entry check");
+        require(inspect.invoke(quiet,entry,root,root.resolve(".spidiboost-updates"),false)==null,"failed retry");
+        phase[0]=1;inspect.invoke(quiet,entry,root,root.resolve(".spidiboost-updates"),false);
+        require(SharedUpdater.status(mod.id()).get("state").equals("current"),"healthy current discovery");
+        inspect.invoke(quiet,entry,root,root.resolve(".spidiboost-updates"),true);
+        require(SharedUpdater.status(mod.id()).get("state").equals("current"),"current entry check");
+        phase[0]=2;inspect.invoke(quiet,entry,root,root.resolve(".spidiboost-updates"),false);
+        require(SharedUpdater.status(mod.id()).get("state").equals("available"),"new release discovered without activation");
+        require(calls[0]==5&&!Files.exists(root),"no filesystem changes in quiet checks");
+        for(String name:List.of("pendingHelper","pendingPlan")){var f=SharedUpdater.class.getDeclaredField(name);f.setAccessible(true);require(f.get(quiet)==null,"no helper or installation plan");}
+        require(before==messages(client).size()&&client.currentScreen==screen,"no native chat or screen changes");
+        pass("native offline entry + failed retry + current version + newer retry: zero chat messages, zero screens, no JAR/helper/restart");
+    }
     private void tick(MinecraftClient client) {
         if(step==99)return;
         try {
@@ -29,6 +57,7 @@ public final class NativeUpdaterProbe {
             if(step==0&&client.currentScreen!=null)return;
             if(step==0) {
                 Path root=client.runDirectory.toPath();report=root.resolve("native-updater-results.txt");marker=root.resolve("updater-restarted.txt");Files.deleteIfExists(marker);
+                quietChecks(client);
                 Path data=root.resolve("updater-QA/Призма с пробелами"),instance=data.resolve("instances/Updater QA");game=instance.resolve("minecraft");
                 Files.createDirectories(game.resolve("mods"));Files.createDirectories(game.resolve(".spidiboost-updates"));Files.writeString(instance.resolve("instance.cfg"),"name=Updater QA\n");
                 Path old=game.resolve("mods/QA-1.21.4-1.0.0.jar"),next=game.resolve("mods/QA-1.21.4-1.0.1.jar"),staged=game.resolve(".spidiboost-updates/staged.jar");
