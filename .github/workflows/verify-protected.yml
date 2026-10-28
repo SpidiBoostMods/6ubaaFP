@@ -1,0 +1,38 @@
+name: Verify protected release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  verify:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
+        java: ['21.0.7', '21']
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Download candidate binaries
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir candidate
+      - name: Verify protected bytecode and runtime
+        shell: bash
+        run: |
+          java -Xverify:all -Xmx512m -jar candidate/protection-check.jar \
+            "candidate/6ubaaFP-1.21.4-${RELEASE_TAG#v}.jar" \
+            candidate/sixubaafp-update.properties candidate/fixture.jar candidate/fixture.json
